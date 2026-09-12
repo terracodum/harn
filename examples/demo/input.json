@@ -1,0 +1,21 @@
+{
+  "case_id": "ledger-refund-netting",
+  "brief": "При суточном закрытии возвраты (refund) со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи (payment) учитываются верно. Нужно исправить расчёт нетто-баланса так, чтобы settled-возвраты вычитались из суммы, а не прибавлялись. Операции без settled_at или с settled_at позже момента закрытия по-прежнему игнорируются. Публичные интерфейсы функций и модель Transaction менять нельзя.",
+  "repository": "../demo_repo",
+  "output_dir": "../../out/ledger-refund-netting",
+  "author": "harness-demo",
+  "seed": 1,
+  "limits": {
+    "build_timeout_sec": 1200,
+    "run_timeout_sec": 600,
+    "max_retries": 2,
+    "max_context_files": 6,
+    "max_context_chars": 60000
+  },
+  "untrusted_dirs": ["tickets"],
+  "llm": {
+    "model": "gpt-oss:120b",
+    "base_url": "http://localhost:11434/v1",
+    "embedding_model": null
+  }
+}

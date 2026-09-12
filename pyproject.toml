@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "benchmark-harness"
+version = "0.1.0"
+description = "Autonomous benchmark-case generator: repo + brief -> verified task/ + evidence/ + result.json"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.50",      # any OpenAI-compatible endpoint: Ollama, vLLM, GigaChat proxy, ...
+    "zvec>=0.7",         # local hybrid (FTS + dense) code search
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+harness = "harness.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["harness*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
