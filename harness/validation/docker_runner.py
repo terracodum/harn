@@ -79,11 +79,15 @@ class DockerRunner:
         return self._execute(cmd, log_path, timeout)
 
     def run(self, tag: str, *, mounts: list[Mount], command: str, log_path: Path, timeout: int,
-            network_none: bool = True) -> ProcResult:
+            network_none: bool = True, cpus: int | None = None, memory_mb: int | None = None) -> ProcResult:
         name = f"harness-{uuid.uuid4().hex[:12]}"
         cmd = [self.docker, "run", "--rm", "--name", name]
         if network_none:
             cmd += ["--network", "none"]
+        if cpus:
+            cmd += ["--cpus", str(cpus)]
+        if memory_mb:
+            cmd += ["--memory", f"{memory_mb}m"]
         for m in mounts:
             cmd += ["-v", m.as_arg()]
         cmd += [tag, "sh", "-c", command]

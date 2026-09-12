@@ -107,7 +107,8 @@ class Pipeline:
                 write_json(self.evidence_dir / "localization.json", ctx.summary())
                 log.info("context files: %s", [f.path for f in ctx.files])
 
-            engine = SynthesisEngine(self.llm, brief=cfg.brief, profile=profile)
+            engine = SynthesisEngine(self.llm, brief=cfg.brief, profile=profile,
+                                     instruction_language=cfg.language_name, difficulty=cfg.difficulty)
             env_builder = PythonEnvironmentBuilder()
             with self._stage("3-synthesis"):
                 syn: Synthesis = engine.synthesize(ctx, max_chars=cfg.limits.max_context_chars)
@@ -128,7 +129,7 @@ class Pipeline:
                 ok, info = self.docker.available()
                 if not ok:
                     raise PipelineError(f"docker is not available: {info}")
-                image_tag = f"harness-{cfg.case_id.lower()}:{cfg.seed}"
+                image_tag = cfg.image_tag
                 verifier = ConvergenceVerifier(self.docker, PytestJUnitRunner(), task_dir=self.task_dir,
                                                evidence_dir=self.evidence_dir, limits=cfg.limits,
                                                image_tag=image_tag, isolated_runs=self.isolated_runs)

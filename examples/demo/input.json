@@ -1,17 +1,29 @@
 {
-  "case_id": "ledger-refund-netting",
-  "brief": "При суточном закрытии возвраты (refund) со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи (payment) учитываются верно. Нужно исправить расчёт нетто-баланса так, чтобы settled-возвраты вычитались из суммы, а не прибавлялись. Операции без settled_at или с settled_at позже момента закрытия по-прежнему игнорируются. Публичные интерфейсы функций и модель Transaction менять нельзя.",
+  "protocol_version": "1.0",
   "repository": "../demo_repo",
+  "brief": "При суточном закрытии возвраты (refund) со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи (payment) учитываются верно. Нужно исправить расчёт нетто-баланса так, чтобы settled-возвраты вычитались из суммы, а не прибавлялись. Операции без settled_at или с settled_at позже момента закрытия по-прежнему игнорируются. Публичные интерфейсы функций и модель Transaction менять нельзя.",
   "output_dir": "../../out/ledger-refund-netting",
-  "author": "harness-demo",
-  "seed": 1,
+  "case_id": "demo/ledger-refund-netting",
+  "difficulty": "easy",
+  "language": "ru",
   "limits": {
+    "agent_timeout_sec": 1800,
+    "verifier_timeout_sec": 600,
     "build_timeout_sec": 1200,
-    "run_timeout_sec": 600,
+    "cpus": 2,
+    "memory_mb": 2048,
+    "storage_mb": 4096,
     "max_retries": 2,
     "max_context_files": 6,
     "max_context_chars": 60000
   },
+  "author": {
+    "name": "harness-demo",
+    "email": "demo@example.org"
+  },
+  "seed": 1,
+  "source": "demo/ledger-refund-netting",
+  "team": "demo",
   "untrusted_dirs": ["tickets"],
   "llm": {
     "model": "gpt-oss:120b",

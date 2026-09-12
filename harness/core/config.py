@@ -1,8 +1,29 @@
-"""Validation of the input JSON and limits (Stage 1.1)."""
+"""Validation of the input JSON and limits (Stage 1.1).
+
+Input format (protocol 1.0):
+
+    {
+      "protocol_version": "1.0",
+      "repository": "../repo",            # relative to the JSON file
+      "brief": "...",                     # task description (any language)
+      "output_dir": "../runs/example",
+      "case_id": "hackathon/settlement-001",
+      "difficulty": "medium",
+      "language": "ru",                   # language of instruction.md
+      "limits": {"agent_timeout_sec": 1800, "verifier_timeout_sec": 300, "build_timeout_sec": 900,
+                 "cpus": 2, "memory_mb": 4096, "storage_mb": 10240},
+      "author": {"name": "...", "email": "..."},
+      "seed": 4107,
+      "source": "hackathon/settlement-001",
+      "team": "team-example",
+      "llm": {...}                        # optional, harness-specific (see LLMSettings)
+    }
+"""
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,25 +33,76 @@ class ConfigError(ValueError):
     pass
 
 
+_CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_LANG_NAMES = {"ru": "Russian", "en": "English", "de": "German", "fr": "French", "es": "Spanish", "zh": "Chinese"}
+
+
+def _int(raw: dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
+    value = raw.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ConfigError(f"limits.{key} must be an integer >= {minimum}")
+    return value
+
+
 @dataclass(frozen=True)
 class Limits:
-    build_timeout_sec: int = 1800
-    run_timeout_sec: int = 900
-    max_retries: int = 2          # self-healing iterations
-    max_context_files: int = 8    # top-N implementation files passed to the LLM
+    # protocol fields
+    agent_timeout_sec: int = 1800        # budget of the solver agent (recorded in task.toml)
+    verifier_timeout_sec: int = 300      # one sandbox run (test.sh)
+    build_timeout_sec: int = 900         # docker build
+    cpus: int = 2
+    memory_mb: int = 4096
+    storage_mb: int = 10240
+    # harness-specific extras (optional)
+    max_retries: int = 2                 # self-healing iterations
+    max_context_files: int = 8           # top-N implementation files passed to the LLM
     max_context_chars: int = 80_000
+
+    @property
+    def run_timeout_sec(self) -> int:
+        return self.verifier_timeout_sec
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "Limits":
-        raw = raw or {}
-        kwargs: dict[str, Any] = {}
-        for name in cls.__dataclass_fields__:
-            if name in raw:
-                value = raw[name]
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    raise ConfigError(f"limits.{name} must be a non-negative integer")
-                kwargs[name] = value
-        return cls(**kwargs)
+        raw = dict(raw or {})
+        if not isinstance(raw, dict):
+            raise ConfigError("limits must be an object")
+        if "run_timeout_sec" in raw and "verifier_timeout_sec" not in raw:   # legacy alias
+            raw["verifier_timeout_sec"] = raw.pop("run_timeout_sec")
+        defaults = cls()
+        return cls(
+            agent_timeout_sec=_int(raw, "agent_timeout_sec", defaults.agent_timeout_sec, minimum=1),
+            verifier_timeout_sec=_int(raw, "verifier_timeout_sec", defaults.verifier_timeout_sec, minimum=1),
+            build_timeout_sec=_int(raw, "build_timeout_sec", defaults.build_timeout_sec, minimum=1),
+            cpus=_int(raw, "cpus", defaults.cpus, minimum=1),
+            memory_mb=_int(raw, "memory_mb", defaults.memory_mb, minimum=256),
+            storage_mb=_int(raw, "storage_mb", defaults.storage_mb, minimum=1),
+            max_retries=_int(raw, "max_retries", defaults.max_retries),
+            max_context_files=_int(raw, "max_context_files", defaults.max_context_files, minimum=1),
+            max_context_chars=_int(raw, "max_context_chars", defaults.max_context_chars, minimum=1000),
+        )
+
+    def to_protocol_dict(self) -> dict[str, int]:
+        return {k: getattr(self, k) for k in ("agent_timeout_sec", "verifier_timeout_sec", "build_timeout_sec",
+                                              "cpus", "memory_mb", "storage_mb")}
+
+
+@dataclass(frozen=True)
+class Author:
+    name: str
+    email: str = ""
+
+    @classmethod
+    def from_value(cls, raw: Any) -> "Author":
+        if isinstance(raw, str) and raw.strip():
+            return cls(name=raw.strip())
+        if isinstance(raw, dict) and isinstance(raw.get("name"), str) and raw["name"].strip():
+            email = raw.get("email", "")
+            return cls(name=raw["name"].strip(), email=str(email).strip() if email else "")
+        raise ConfigError("author must be a non-empty string or {name, email}")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"name": self.name, "email": self.email}
 
 
 @dataclass(frozen=True)
@@ -79,15 +151,28 @@ class CaseConfig:
     brief: str
     repository: Path
     output_dir: Path
-    author: str
+    author: Author
     seed: int
+    protocol_version: str = "1.0"
+    difficulty: str = "medium"
+    language: str = "en"                 # language of instruction.md (ISO 639-1)
+    source: str = ""
+    team: str = ""
     limits: Limits = field(default_factory=Limits)
     llm: LLMSettings = field(default_factory=LLMSettings)
-    language: str = "python"
     untrusted_dirs: tuple[str, ...] = ()
-    source: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     REQUIRED = ("case_id", "brief", "repository", "limits", "author", "seed")
+
+    @property
+    def image_tag(self) -> str:
+        slug = re.sub(r"[^a-z0-9._-]+", "-", self.case_id.lower()).strip("-.")
+        return f"harness-{slug}:{self.seed}"
+
+    @property
+    def language_name(self) -> str:
+        return _LANG_NAMES.get(self.language.lower(), self.language)
 
     @classmethod
     def load(cls, path: str | Path, *, output_dir: str | Path | None = None,
@@ -112,20 +197,26 @@ class CaseConfig:
         if missing:
             raise ConfigError(f"input JSON is missing required keys: {', '.join(missing)}")
 
+        protocol_version = str(raw.get("protocol_version", "1.0"))
+        if not protocol_version.startswith("1."):
+            raise ConfigError(f"unsupported protocol_version: {protocol_version}")
+
         case_id = raw["case_id"]
-        if not isinstance(case_id, str) or not case_id.strip():
-            raise ConfigError("case_id must be a non-empty string")
-        if any(ch in case_id for ch in "/\\ \t\n:"):
-            raise ConfigError("case_id must not contain path separators, colons or whitespace")
+        if not isinstance(case_id, str) or not _CASE_ID.match(case_id.strip()) or ".." in case_id:
+            raise ConfigError("case_id must match [A-Za-z0-9._/-] (e.g. hackathon/settlement-001)")
         brief = raw["brief"]
         if not isinstance(brief, str) or len(brief.strip()) < 10:
             raise ConfigError("brief must be a meaningful non-empty string")
-        author = raw["author"]
-        if not isinstance(author, str) or not author.strip():
-            raise ConfigError("author must be a non-empty string")
+        author = Author.from_value(raw["author"])
         seed = raw["seed"]
         if not isinstance(seed, int) or isinstance(seed, bool):
             raise ConfigError("seed must be an integer")
+        difficulty = str(raw.get("difficulty", "medium")).strip().lower()
+        if difficulty not in ("easy", "medium", "hard"):
+            raise ConfigError("difficulty must be easy | medium | hard")
+        language = str(raw.get("language", "en")).strip().lower()
+        if not re.match(r"^[a-z]{2}(-[a-z]{2})?$", language):
+            raise ConfigError("language must be an ISO 639-1 code like 'ru' or 'en'")
 
         repo = Path(raw["repository"])
         if not repo.is_absolute():
@@ -157,11 +248,15 @@ class CaseConfig:
             brief=brief.strip(),
             repository=repo,
             output_dir=out,
-            author=author.strip(),
+            author=author,
             seed=seed,
+            protocol_version=protocol_version,
+            difficulty=difficulty,
+            language=language,
+            source=str(raw.get("source", "") or ""),
+            team=str(raw.get("team", "") or ""),
             limits=Limits.from_dict(raw.get("limits")),
             llm=LLMSettings.from_dict(raw.get("llm"), overrides=llm_overrides),
-            language=str(raw.get("language", "python")),
             untrusted_dirs=untrusted,
-            source=raw,
+            raw=raw,
         )

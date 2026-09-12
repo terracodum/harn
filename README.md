@@ -34,11 +34,25 @@ JSON ответ запрашивается в самом строгом режи
 (`json_schema` → `json_object` → текст); неподдерживаемые режимы отключаются
 автоматически после первого 400.
 
-## Входной JSON
+## Входной JSON (protocol 1.0)
 
-См. [examples/demo/input.json](examples/demo/input.json): `case_id`, `brief`,
-`repository`, `output_dir`, `author`, `seed`, `limits`, `untrusted_dirs`, `llm`.
-Пути в JSON относительны файлу JSON, `--output-dir` из CLI — текущей папке. `output_dir` должен быть пустым и вне репозитория.
+Эталон формата: [examples/protocol/input.example.json](examples/protocol/input.example.json).
+
+| Поле | Назначение |
+|------|------------|
+| `protocol_version` | `"1.0"` |
+| `repository`, `output_dir` | пути относительно файла JSON; `output_dir` пустой и вне репозитория |
+| `brief` | постановка задачи (обязательно непустая) |
+| `case_id`, `source`, `team` | идентификаторы, `case_id` может содержать `/` (`hackathon/settlement-001`) |
+| `difficulty` | `easy` / `medium` / `hard`, передаётся в промпт и в `task.toml` |
+| `language` | язык `instruction.md` (`ru`, `en`, …), не язык стека |
+| `limits` | `agent_timeout_sec` (бюджет решателя, в `task.toml`), `verifier_timeout_sec` (один прогон `test.sh`), `build_timeout_sec`, `cpus` и `memory_mb` (ограничения `docker run`), `storage_mb` |
+| `author` | `{ "name", "email" }` |
+| `seed` | целое |
+| `untrusted_dirs`, `llm`, `limits.max_retries`, `limits.max_context_*` | необязательные расширения харнесса |
+
+`--output-dir` из CLI резолвится относительно текущей папки. Старые формы (`author` строкой,
+`limits.run_timeout_sec`) принимаются.
 
 Реальный пример на проекте `meridian` (Python + PostgreSQL + Alembic):
 [examples/meridian/input.json](examples/meridian/input.json). Сошёлся с первой попытки на

@@ -17,6 +17,8 @@ def _toml_value(value: Any) -> str:
         return repr(value)
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, dict):  # inline table
+        return "{ " + ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items()) + " }"
     if isinstance(value, (list, tuple)):
         if not value:
             return "[]"
@@ -45,18 +47,20 @@ def write_task_toml(task_dir: Path, config: CaseConfig, profile: StackProfile,
                     manifest: dict[str, list[str]], snapshot_sha256: str) -> None:
     doc: dict[str, Any] = {
         "schema_version": "1.1",
+        "protocol_version": config.protocol_version,
         "case_id": config.case_id,
-        "language": profile.language,
-        "authors": [config.author],
+        "source": config.source,
+        "team": config.team,
+        "difficulty": config.difficulty,
+        "language": config.language,            # language of instruction.md
+        "stack": profile.language,              # detected implementation stack
+        "authors": [config.author.to_dict()],
         "seed": config.seed,
         "input_snapshot_sha256": snapshot_sha256,
         "fail_to_pass": manifest["fail_to_pass"],
         "pass_to_pass": manifest["pass_to_pass"],
         "anti_cheat": manifest["anti_cheat"],
-        "limits": {
-            "build_timeout_sec": config.limits.build_timeout_sec,
-            "run_timeout_sec": config.limits.run_timeout_sec,
-        },
+        "limits": config.limits.to_protocol_dict(),
         "environment": {
             "dockerfile": "environment/Dockerfile",
             "repo": "environment/repo",

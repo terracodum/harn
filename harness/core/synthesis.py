@@ -70,7 +70,8 @@ Rules:
      string representations: use list(inspect.signature(f).parameters) == [...], parameter kinds and
      defaults, model_fields / dataclasses.fields names - str(signature) differs with annotation
      rendering (date vs datetime.date, quoted annotations) and will break.
-3. instruction_md: a professional task statement in the language of the brief: business context,
+3. instruction_md: a professional task statement written in {instruction_language} (mandatory, whatever
+   the language of the brief or the code): business context,
    required behaviour, input/output contracts, constraints ("do not change public interfaces"),
    how to run existing tests. STRICTLY NO spoilers: do not name the defect location or the fix,
    do not mention solve.sh, hidden tests, test file names or the categories.
@@ -231,11 +232,14 @@ def materialize(task_dir: Path, syn: Synthesis) -> None:
 
 
 class SynthesisEngine:
-    def __init__(self, llm: BaseLLMClient, *, brief: str, profile: StackProfile, repair_rounds: int = 2) -> None:
+    def __init__(self, llm: BaseLLMClient, *, brief: str, profile: StackProfile, repair_rounds: int = 2,
+                 instruction_language: str = "English", difficulty: str = "medium") -> None:
         self.llm = llm
         self.brief = brief
         self.profile = profile
         self.repair_rounds = repair_rounds
+        self.instruction_language = instruction_language
+        self.difficulty = difficulty
         self.raw_history: list[dict[str, Any]] = []   # every raw LLM bundle, for evidence/llm_responses
 
     def _record(self, purpose: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -269,10 +273,11 @@ class SynthesisEngine:
             db = "The project uses SQLite; create temporary databases under tmp_path in tests."
         else:
             db = "No database service is available."
-        return template.format(db_note=db)
+        return template.format(db_note=db, instruction_language=self.instruction_language)
 
     def _context_block(self, ctx: ContextPackage, max_chars: int) -> str:
-        return (f"<brief>\n{self.brief}\n</brief>\n\n<stack>\n{json.dumps(self.profile.to_dict(), ensure_ascii=False)}\n</stack>\n\n"
+        return (f"<brief>\n{self.brief}\n</brief>\n\n<case difficulty=\"{self.difficulty}\" instruction_language=\"{self.instruction_language}\"/>\n\n"
+                f"<stack>\n{json.dumps(self.profile.to_dict(), ensure_ascii=False)}\n</stack>\n\n"
                 f"<repository_excerpts>\n{ctx.render(max_chars=max_chars)}\n</repository_excerpts>")
 
     def synthesize(self, ctx: ContextPackage, *, max_chars: int) -> Synthesis:

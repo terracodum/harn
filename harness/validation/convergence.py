@@ -73,7 +73,8 @@ class ConvergenceVerifier:
             mounts.append(Mount(self.task_dir / "solution", "/solution", True))
         cmd = (_ORACLE_CMD if with_solution else _BASE_CMD).format(category=category)
         proc = self.docker.run(self.image_tag, mounts=mounts, command=cmd,
-                               log_path=logs_dir / "container.log", timeout=self.limits.run_timeout_sec)
+                               log_path=logs_dir / "container.log", timeout=self.limits.run_timeout_sec,
+                               cpus=self.limits.cpus, memory_mb=self.limits.memory_mb)
         result = self.runner.parse_results(logs_dir, manifest, category)
         result.exit_code, result.duration_sec, result.timed_out = proc.exit_code, proc.duration_sec, proc.timed_out
         if with_solution:
