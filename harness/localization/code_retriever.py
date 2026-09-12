@@ -432,10 +432,16 @@ def assemble_context(tree: ProjectTree, hits: list[ChunkHit], *, queries: list[s
     tests = [p for p, _ in ranked if by_path[p].is_test][:2]
     # neighbourhood: the rest of the component the top hit lives in (adapters, DI wiring, repositories)
     neighbours: list[str] = []
-    if impl:
-        comp = _component_root(impl[0])
+    top_code = next((p for p in impl if by_path[p].is_code), None)
+    if top_code:
+        comp = _component_root(top_code)
         neighbours = [f.rel_path for f in tree.trusted_files
                       if f.is_code and f.rel_path.startswith(comp) and f.rel_path not in impl and not f.is_test][:max_files]
+        comp_name = comp.rstrip("/").split("/")[-1].lower()
+        if comp_name:
+            # the component's own tests first: they show how production code is wired in tests
+            own = [f.rel_path for f in tree.trusted_files if f.is_test and f.is_code and comp_name in f.rel_path.lower()]
+            tests = list(dict.fromkeys([*own[:2], *tests]))[:3]
     contracts = [f.rel_path for f in tree.trusted_files
                  if f.is_contract and f.is_code and f.rel_path not in impl and f.rel_path not in neighbours
                  and not f.is_test][:4]
