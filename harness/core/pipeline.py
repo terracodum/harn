@@ -259,5 +259,6 @@ class Pipeline:
             result = write_result(self.output_dir, status=status, error=error, limitations=self.limitations,
                                   attempts=attempts, extra={"case_id": cfg.case_id,
                                                             "input_snapshot_sha256": snapshot_before,
-                                                            "llm": self.llm.tracker.summary() | {"calls": None}})
+                                                            "llm": {k: v for k, v in self.llm.tracker.summary().items()
+                                                                    if k != "calls"} | {"details": "evidence/llm_usage.json"}})
         return result
