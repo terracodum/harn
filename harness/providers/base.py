@@ -25,6 +25,8 @@ class StackProfile:
     alembic: bool = False
     sql_files: list[str] = field(default_factory=list)
     seed_files: list[str] = field(default_factory=list)      # sql/*seed*.sql applied by test.sh after migrations
+    env_vars: list[str] = field(default_factory=list)        # names the project reads via os.environ / getenv
+    db_env: dict[str, str] = field(default_factory=dict)     # DB-related env vars the sandbox will export
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

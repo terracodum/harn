@@ -389,6 +389,19 @@ class ContextPackage:
         }
 
 
+def _component_root(rel_path: str) -> str:
+    """'backend/src/components/settlement/application/impl/x.py' -> 'backend/src/components/settlement/'.
+    Heuristic: cut after the first directory following a well-known layer marker, else the parent dir."""
+    parts = rel_path.split("/")
+    dirs = parts[:-1]
+    for markers in (("components", "apps", "modules", "services", "domains", "packages"), ("src",)):
+        hits = [i for i, part in enumerate(dirs) if part in markers and i + 1 < len(dirs)]
+        if hits:
+            i = hits[-1]
+            return "/".join(parts[:i + 2]) + "/"
+    return "/".join(dirs) + "/" if dirs else ""
+
+
 def _merge_ranges(ranges: list[tuple[int, int]], pad: int, max_line: int) -> list[tuple[int, int]]:
     padded = sorted((max(1, s - pad), min(max_line, e + pad)) for s, e in ranges)
     merged: list[tuple[int, int]] = []
@@ -417,11 +430,18 @@ def assemble_context(tree: ProjectTree, hits: list[ChunkHit], *, queries: list[s
     ranked = sorted(file_scores.items(), key=lambda kv: (-kv[1], kv[0]))
     impl = [p for p, _ in ranked if not by_path[p].is_test][:max_files]
     tests = [p for p, _ in ranked if by_path[p].is_test][:2]
+    # neighbourhood: the rest of the component the top hit lives in (adapters, DI wiring, repositories)
+    neighbours: list[str] = []
+    if impl:
+        comp = _component_root(impl[0])
+        neighbours = [f.rel_path for f in tree.trusted_files
+                      if f.is_code and f.rel_path.startswith(comp) and f.rel_path not in impl and not f.is_test][:max_files]
     contracts = [f.rel_path for f in tree.trusted_files
-                 if f.is_contract and f.is_code and f.rel_path not in impl and not f.is_test][:4]
+                 if f.is_contract and f.is_code and f.rel_path not in impl and f.rel_path not in neighbours
+                 and not f.is_test][:4]
 
     files: list[ContextFile] = []
-    for role, paths in (("implementation", impl), ("contract", contracts), ("test", tests)):
+    for role, paths in (("implementation", impl), ("contract", contracts), ("neighbour", neighbours), ("test", tests)):
         for p in paths:
             text = read_text(tree.root / p)
             if text is None:

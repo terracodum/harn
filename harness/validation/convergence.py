@@ -147,8 +147,17 @@ class ConvergenceVerifier:
             setattr(report, kind, check)
             report.runs.append({"name": kind, **proc.to_dict(), "reward": result.reward,
                                 "status": "ok" if check.ok else "failed"})
+            pg_log = logs_dir / "verifier" / "postgres.log"
+            if pg_log.exists():
+                pg_text = pg_log.read_text(encoding="utf-8", errors="replace")
+                for marker in ("alembic upgrade head failed", "seed "):
+                    for line in pg_text.splitlines():
+                        if line.startswith("[test.sh]") and marker in line:
+                            check.problems.append(f"{kind}: environment: {line} (see verifier/postgres.log)")
+                            check.ok = False
+                report.logs[f"{kind}/postgres.log"] = pg_text[-4000:]
             report.problems.extend(check.problems)
-            report.logs[f"{kind}/pytest.log"] = _tail(logs_dir / "verifier" / "pytest.log")
+            report.logs[f"{kind}/pytest.log"] = _tail(logs_dir / "verifier" / "pytest.log", 12000)
             if with_solution:
                 report.logs["oracle/solve.log"] = _tail(logs_dir / "solve.log", 3000)
             if not check.ok and kind == "base":

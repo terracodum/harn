@@ -52,7 +52,7 @@ RUN curl -fsSL --retry 5 https://www.postgresql.org/media/keys/ACCC4CF8.asc | gp
 ENV HARNESS_POSTGRES=1 \\
     DATABASE_URL={db_url_scheme}://harness:harness@localhost:5432/harness \\
     PGHOST=localhost PGPORT=5432 PGUSER=harness PGPASSWORD=harness PGDATABASE=harness
-"""
+{project_db_env}"""
 
 _TEST_SH = """\
 #!/bin/sh
@@ -115,11 +115,18 @@ class PythonEnvironmentBuilder(IEnvironmentBuilder):
         return _DOCKERFILE.format(
             python_version=profile.python_version,
             apt_extra="",
-            postgres_block=_POSTGRES_BLOCK.replace("{db_url_scheme}", profile.db_url_scheme) if profile.uses_postgres else "",
+            postgres_block=self._postgres_block(profile) if profile.uses_postgres else "",
             extra_packages=" ".join(f'"{p}"' for p in extra_packages),
             requirements_lines=req_lines,
             pythonpath=pythonpath,
         )
+
+    @staticmethod
+    def _postgres_block(profile: StackProfile) -> str:
+        extra = {k: v for k, v in sorted(profile.db_env.items()) if k not in ("DATABASE_URL",)}
+        lines = "".join(f'ENV {k}="{v}"\n' for k, v in extra.items())
+        return (_POSTGRES_BLOCK.replace("{db_url_scheme}", profile.db_url_scheme)
+                .replace("{project_db_env}", ("# env vars the project reads, pointed at the sandbox database\n" + lines) if lines else ""))
 
     def render_test_sh(self, profile: StackProfile) -> str:
         pythonpath = ":".join(["/app/repo", *[f"/app/repo/{d}" for d in profile.package_dirs]])

@@ -296,8 +296,13 @@ class SynthesisEngine:
 
     def _system(self, template: str) -> str:
         if self.profile.uses_postgres:
-            db = (f"PostgreSQL 16 is running locally as superuser harness; DATABASE_URL={self.profile.db_url_scheme}://"
-                  "harness:harness@localhost:5432/harness (also PGHOST/PGUSER/PGPASSWORD/PGDATABASE, psql available). "
+            db_env = ", ".join(f"{k}={v}" for k, v in sorted(self.profile.db_env.items()))
+            db = (f"PostgreSQL 16 is running locally as superuser harness. DATABASE_URL={self.profile.db_url_scheme}://"
+                  "harness:harness@localhost:5432/harness is a SQLAlchemy URL (do NOT pass it to psycopg.connect). "
+                  "PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE are set, so `psycopg.connect()` with no arguments and "
+                  f"`psql` with no connection flags both work. Project env vars exported in the sandbox: {db_env or 'none'}. "
+                  "For DB-backed tests wire the project's Postgres repositories/adapters exactly as production code does "
+                  "(see the infrastructure files in the excerpts), not the in-memory ones, and insert fixtures with SQL. "
                   "Before pytest, test.sh runs `alembic upgrade head` (if alembic.ini exists) and then applies these "
                   f"seed files with psql: {', '.join(self.profile.seed_files) or 'none'}. Tests that need more SQL "
                   "fixtures create them themselves (psycopg / psql) inside a transaction they roll back.")

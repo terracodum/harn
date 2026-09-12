@@ -72,6 +72,14 @@ def test_zvec_index_finds_netting(demo_repo_copy, tmp_path):
     assert impl_hits and impl_hits[0].chunk.path == "ledger/netting.py"
 
 
+def test_component_root():
+    from harness.localization.code_retriever import _component_root
+    assert _component_root("backend/src/components/settlement/application/impl/x.py") == "backend/src/components/settlement/"
+    assert _component_root("src/pkg/module.py") == "src/pkg/"
+    assert _component_root("ledger/netting.py") == "ledger/"
+    assert _component_root("app.py") == ""
+
+
 def test_assemble_context_roles(demo_repo_copy):
     tree = build_project_tree(demo_repo_copy, untrusted_dirs=["tickets"])
     hits = KeywordIndex(chunk_tree(tree)).search(["refund settled net_balance"])

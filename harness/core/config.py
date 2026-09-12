@@ -72,9 +72,9 @@ class Limits:
     memory_mb: int = 4096
     storage_mb: int = 10240
     # harness-specific extras (optional)
-    max_retries: int = 2                 # self-healing iterations
-    max_context_files: int = 8           # top-N implementation files passed to the LLM
-    max_context_chars: int = 80_000
+    max_retries: int = 3                 # self-healing iterations
+    max_context_files: int = 10          # top-N implementation files passed to the LLM
+    max_context_chars: int = 120_000
 
     @property
     def run_timeout_sec(self) -> int:

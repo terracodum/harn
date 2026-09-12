@@ -11,6 +11,7 @@ from harness.providers.base import IStackDetector, StackProfile
 _PG_MARKERS = re.compile(r"psycopg|asyncpg|postgres|pg8000", re.IGNORECASE)
 _SQLITE_MARKERS = re.compile(r"\bsqlite3?\b|aiosqlite", re.IGNORECASE)
 _PY_REQ = re.compile(r"(\d+)\.(\d+)")
+_ENV_READ = re.compile(r"(?:os\.environ(?:\.get)?\s*[\[(]\s*|os\.getenv\s*\(\s*|\$\{?)[\"']?([A-Z][A-Z0-9_]{2,})")
 
 
 class PythonStackDetector(IStackDetector):
@@ -99,6 +100,21 @@ class PythonStackDetector(IStackDetector):
         for p in [p for p in paths if p.endswith(".py")][:200]:
             code_sample += (read_text(repo / p) or "")[:2000]
         profile.uses_sqlite = bool(_SQLITE_MARKERS.search(dep_text + code_sample)) and not profile.uses_postgres
+        # environment variables the project reads (so the sandbox can provide DB ones)
+        names: set[str] = set()
+        for p in [p for p in paths if p.endswith((".py", ".ini", ".cfg", ".toml", ".md", ".env.example"))][:400]:
+            for m in _ENV_READ.finditer(read_text(repo / p) or ""):
+                names.add(m.group(1))
+        profile.env_vars = sorted(names)
+        if profile.uses_postgres:
+            for name in profile.env_vars:
+                upper = name.upper()
+                if not re.search(r"DSN|DATABASE|POSTGRES|PG_|DB_URL|DB_URI", upper):
+                    continue
+                if "DSN" in upper and "URL" not in upper:
+                    profile.db_env[name] = "host=localhost port=5432 dbname=harness user=harness password=harness"
+                else:
+                    profile.db_env[name] = f"{profile.db_url_scheme}://harness:harness@localhost:5432/harness"
         if not profile.manifests:
             profile.notes.append("no dependency manifest found; only pytest will be installed")
         return profile
