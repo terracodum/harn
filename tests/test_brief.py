@@ -53,7 +53,8 @@ def _spec(kind: str, testable: bool = True) -> BriefSpec:
 
 def test_coverage_rules():
     assert coverage_problems(_spec("bug"), [{"requirement_id": "R1", "tests": ["tests/t.py::f"]}], MANIFEST) == []
-    assert coverage_problems(_spec("bug"), [{"requirement_id": "R1", "tests": ["tests/t.py::p"]}], MANIFEST)
+    # a `bug` requirement covered only by pass_to_pass is accepted here: the Base run decides empirically
+    assert coverage_problems(_spec("bug"), [{"requirement_id": "R1", "tests": ["tests/t.py::p"]}], MANIFEST) == []
     assert coverage_problems(_spec("invariant"), [{"requirement_id": "R1", "tests": ["tests/t.py::p"]}], MANIFEST) == []
     assert coverage_problems(_spec("bug"), [], MANIFEST)
     assert coverage_problems(_spec("bug", testable=False), [], MANIFEST) == []

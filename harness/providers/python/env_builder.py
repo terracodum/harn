@@ -78,6 +78,9 @@ if [ "${HARNESS_POSTGRES:-}" = "1" ]; then
   if [ -f alembic.ini ]; then
     alembic upgrade head >>/logs/verifier/postgres.log 2>&1 || echo "[test.sh] alembic upgrade head failed" >>/logs/verifier/postgres.log
   fi
+  for seed in {seed_files}; do
+    [ -f "$seed" ] && { psql -v ON_ERROR_STOP=1 -q -f "$seed" >>/logs/verifier/postgres.log 2>&1 || echo "[test.sh] seed $seed failed" >>/logs/verifier/postgres.log; }
+  done
 fi"""
 
 _PYTEST_INI = "[pytest]\naddopts = -p no:cacheprovider\n"
@@ -120,8 +123,9 @@ class PythonEnvironmentBuilder(IEnvironmentBuilder):
 
     def render_test_sh(self, profile: StackProfile) -> str:
         pythonpath = ":".join(["/app/repo", *[f"/app/repo/{d}" for d in profile.package_dirs]])
-        return _TEST_SH.replace("{pythonpath}", pythonpath).replace(
-            "{postgres_start}", _POSTGRES_START if profile.uses_postgres else "")
+        seeds = " ".join(f'"{s}"' for s in profile.seed_files) or '""'
+        postgres_start = _POSTGRES_START.replace("{seed_files}", seeds) if profile.uses_postgres else ""
+        return _TEST_SH.replace("{pythonpath}", pythonpath).replace("{postgres_start}", postgres_start)
 
     def build(self, *, task_dir: Path, repo: Path, tree: ProjectTree, profile: StackProfile,
               extra_packages: list[str]) -> None:

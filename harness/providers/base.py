@@ -24,6 +24,7 @@ class StackProfile:
     db_url_scheme: str = "postgresql"                        # SQLAlchemy-style when the project uses it
     alembic: bool = False
     sql_files: list[str] = field(default_factory=list)
+    seed_files: list[str] = field(default_factory=list)      # sql/*seed*.sql applied by test.sh after migrations
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

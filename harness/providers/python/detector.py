@@ -84,6 +84,8 @@ class PythonStackDetector(IStackDetector):
         # infrastructure
         profile.alembic = "alembic.ini" in paths or any(p.startswith("alembic/") or p.startswith("migrations/") for p in paths)
         profile.sql_files = sorted(p for p in paths if p.endswith(".sql"))[:50]
+        profile.seed_files = sorted(p for p in paths if p.endswith(".sql") and "seed" in p.lower()
+                                    and not p.startswith(("tests/", "test/")))
         env_text = "\n".join(read_text(repo / p) or "" for p in paths if p.endswith((".env", ".env.example", "alembic.ini")))
         profile.uses_postgres = bool(_PG_MARKERS.search(dep_text + env_text))
         if profile.uses_postgres and re.search(r"sqlalchemy|alembic", dep_text, re.IGNORECASE):

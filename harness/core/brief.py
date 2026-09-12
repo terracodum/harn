@@ -202,10 +202,15 @@ def analyze_brief(llm: Any | None, brief: str, tree_paths: list[str], *, max_pat
 
 
 def coverage_problems(spec: BriefSpec, coverage: list[dict[str, Any]], manifest: dict[str, list[str]]) -> list[str]:
-    """Every testable requirement needs >= 1 fail_to_pass test (bug/feature/change) or any test otherwise."""
+    """Every testable requirement needs at least one test (any category).
+
+    Whether a requirement really changes behaviour is decided EMPIRICALLY by the Base run, not by
+    the model's kind label: a fail_to_pass test that passes on the original code is moved to
+    pass_to_pass automatically, and a pass_to_pass test that fails on the original code is sent to
+    healing. Demanding a fail_to_pass test per `bug` requirement up front deadlocks on
+    requirements the code already satisfies, so it is deliberately not enforced here."""
     problems: list[str] = []
     all_ids = {t for c in manifest.values() for t in c}
-    f2p = set(manifest["fail_to_pass"])
     covered: dict[str, set[str]] = {}
     for item in coverage or []:
         rid = str(item.get("requirement_id", "")).strip()
@@ -215,13 +220,8 @@ def coverage_problems(spec: BriefSpec, coverage: list[dict[str, Any]], manifest:
                 problems.append(f"coverage: {rid} references unknown test {t}")
         covered.setdefault(rid, set()).update(t for t in tests if t in all_ids)
     for r in spec.requirements:
-        if not r.testable:
-            continue
-        tests = covered.get(r.id, set())
-        if not tests:
+        if r.testable and not covered.get(r.id):
             problems.append(f"coverage: requirement {r.id} ({r.title}) has no tests")
-        elif r.kind in NEEDS_FAIL_TO_PASS and not (tests & f2p):
-            problems.append(f"coverage: requirement {r.id} ({r.title}) must be covered by a fail_to_pass test")
     return problems
 
 

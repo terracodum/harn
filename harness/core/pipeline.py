@@ -47,6 +47,7 @@ class Pipeline:
         self.work_dir = self.output_dir / ".work"
         self.limitations: list[str] = []
         self.stage_times: dict[str, float] = {}
+        self.current_stage = "init"
 
     # ------------------------------------------------------------------ utils
     def _stage(self, name: str):
@@ -55,6 +56,7 @@ class Pipeline:
         class _Timer:
             def __enter__(self):
                 log.info("=== %s", name)
+                pipeline.current_stage = name
                 self.t = time.monotonic()
                 return self
 
@@ -238,11 +240,14 @@ class Pipeline:
                     self.limitations.append(f"stack: {note}")
                 if profile.uses_postgres:
                     self.limitations.append("PostgreSQL provisioned with a default cluster; only `alembic upgrade head` is applied")
-        except (PipelineError, SynthesisError) as exc:
-            error = str(exc)
-            log.error("pipeline failed: %s", exc)
+        except SynthesisError as exc:
+            error = f"bundle rejected by the validator before any sandbox run (stage {self.current_stage}): {exc}"
+            log.error("pipeline failed: %s", error)
+        except PipelineError as exc:
+            error = f"{exc} (stage {self.current_stage})"
+            log.error("pipeline failed: %s", error)
         except Exception as exc:  # noqa: BLE001 - result.json must always be written
-            error = f"{type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: {exc} (stage {self.current_stage})"
             log.exception("pipeline crashed")
         finally:
             self.llm.tracker.write(self.evidence_dir / "llm_usage.json")
@@ -258,6 +263,7 @@ class Pipeline:
             shutil.rmtree(self.work_dir, ignore_errors=True)
             result = write_result(self.output_dir, status=status, error=error, limitations=self.limitations,
                                   attempts=attempts, extra={"case_id": cfg.case_id,
+                                                            "failed_stage": None if status != "failed" else self.current_stage,
                                                             "input_snapshot_sha256": snapshot_before,
                                                             "llm": {k: v for k, v in self.llm.tracker.summary().items()
                                                                     if k != "calls"} | {"details": "evidence/llm_usage.json"}})
