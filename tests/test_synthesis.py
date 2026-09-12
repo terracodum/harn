@@ -41,6 +41,16 @@ def test_empty_init_allowed(mock_responses):
     assert "tests/__init__.py" in syn.test_files
 
 
+def test_async_test_without_plugin_rejected(mock_responses):
+    data = copy.deepcopy(mock_responses["synthesize"])
+    data["test_files"][0]["content"] += "\n\nasync def test_async_thing():\n    assert True\n"
+    data["pass_to_pass"].append("tests/test_netting_refunds.py::test_async_thing")
+    with pytest.raises(SynthesisError, match="asyncio.run"):
+        parse_synthesis(data)
+    data["extra_pip_packages"] = ["pytest-asyncio"]
+    parse_synthesis(data)
+
+
 def test_bad_test_path_rejected(mock_responses):
     data = copy.deepcopy(mock_responses["synthesize"])
     data["test_files"][0]["path"] = "../evil.py"

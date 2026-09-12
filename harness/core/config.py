@@ -37,6 +37,24 @@ _CASE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _LANG_NAMES = {"ru": "Russian", "en": "English", "de": "German", "fr": "French", "es": "Spanish", "zh": "Chinese"}
 
 
+def _load_brief(value: Any, base_dir: Path) -> str:
+    """Accept the brief as text, as a list of paragraphs, or as a path to a .md/.txt file."""
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        value = "\n\n".join(v.strip() for v in value if v.strip())
+    if not isinstance(value, str):
+        raise ConfigError("brief must be a string, a list of strings, or a path to a text file")
+    text = value.strip()
+    if text and "\n" not in text and len(text) < 260 and text.lower().endswith((".md", ".txt", ".rst")):
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = base_dir / candidate
+        if candidate.is_file():
+            text = candidate.read_text(encoding="utf-8", errors="replace").strip()
+    if len(text) < 10:
+        raise ConfigError("brief must be a meaningful non-empty string (or a path to a brief file)")
+    return text
+
+
 def _int(raw: dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
     value = raw.get(key, default)
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
@@ -204,9 +222,7 @@ class CaseConfig:
         case_id = raw["case_id"]
         if not isinstance(case_id, str) or not _CASE_ID.match(case_id.strip()) or ".." in case_id:
             raise ConfigError("case_id must match [A-Za-z0-9._/-] (e.g. hackathon/settlement-001)")
-        brief = raw["brief"]
-        if not isinstance(brief, str) or len(brief.strip()) < 10:
-            raise ConfigError("brief must be a meaningful non-empty string")
+        brief = _load_brief(raw["brief"], base_dir)
         author = Author.from_value(raw["author"])
         seed = raw["seed"]
         if not isinstance(seed, int) or isinstance(seed, bool):

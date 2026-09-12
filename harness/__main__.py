@@ -65,12 +65,15 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     if config.llm.embedding_model and not args.mock_llm:
         from harness.localization.embeddings import make_embedder
         embedder = make_embedder(config.llm)
+    from harness.core.brief import analyze_brief
+    spec = analyze_brief(llm, config.brief, [f.rel_path for f in tree.trusted_files])
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        ctx = localize(tree, config.brief, llm=llm, index_dir=Path(tmp) / "index", embedder=embedder,
+        ctx = localize(tree, config.brief, spec=spec, index_dir=Path(tmp) / "index", embedder=embedder,
                        backend=args.search_backend, max_files=config.limits.max_context_files,
                        max_chars=config.limits.max_context_chars)
-    print(json.dumps({"profile": profile.to_dict(), "context": ctx.summary()}, indent=2, ensure_ascii=False))
+    print(json.dumps({"profile": profile.to_dict(), "brief_spec": spec.to_dict(), "context": ctx.summary()},
+                     indent=2, ensure_ascii=False))
     if args.show_context:
         print(ctx.render(max_chars=config.limits.max_context_chars))
     return 0

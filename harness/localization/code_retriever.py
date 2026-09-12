@@ -444,13 +444,22 @@ def assemble_context(tree: ProjectTree, hits: list[ChunkHit], *, queries: list[s
     return pkg
 
 
-def localize(tree: ProjectTree, brief: str, *, llm: Any | None, index_dir: Path, embedder: Any | None,
-             backend: str = "auto", max_files: int = 8, max_chars: int = 80_000) -> ContextPackage:
-    """Full Stage 2: (optional) LLM query expansion -> hybrid search -> context package."""
+def localize(tree: ProjectTree, brief: str, *, index_dir: Path, embedder: Any | None, spec: Any | None = None,
+             llm: Any | None = None, backend: str = "auto", max_files: int = 8, max_chars: int = 80_000) -> ContextPackage:
+    """Full Stage 2: task spec (or LLM query expansion) -> hybrid search -> context package.
+
+    `spec` is a BriefSpec from Stage 2a; when given, its requirements, entities and candidate
+    files drive the search. Without it, `llm` (optional) is used for a one-shot query expansion.
+    """
     queries = [brief]
     keywords = extract_terms(brief, limit=25)
     candidates: list[str] = []
-    if llm is not None:
+    if spec is not None:
+        queries += [q for q in spec.search_queries if q and q != brief]
+        queries += [f"{r.title}. {r.statement}" for r in spec.requirements]
+        keywords = list(dict.fromkeys([*spec.entities, *keywords]))
+        candidates = list(spec.candidate_files)
+    elif llm is not None:
         try:
             exp = expand_queries(llm, brief, tree)
             queries += [q for q in exp.get("search_queries", []) if isinstance(q, str) and q.strip()]

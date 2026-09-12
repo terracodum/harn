@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.core.artifacts import write_json, write_result, write_task_toml
+from harness.core.brief import analyze_brief, reclassify_from_base_run
 from harness.core.config import CaseConfig
 from harness.core.llm.base_client import BaseLLMClient
 from harness.core.snapshot import snapshot_sha256
@@ -16,7 +17,8 @@ from harness.localization.code_retriever import ContextPackage, build_project_tr
 from harness.providers.python.detector import PythonStackDetector
 from harness.providers.python.env_builder import PythonEnvironmentBuilder
 from harness.providers.python.test_runner import PytestJUnitRunner
-from harness.validation.convergence import ConvergenceVerifier, VerificationReport
+from harness.validation.convergence import (ConvergenceVerifier, VerificationReport, auto_recategorize,
+                                            solution_change_justified)
 from harness.validation.docker_runner import DockerRunner
 
 log = logging.getLogger("harness")
@@ -99,15 +101,24 @@ class Pipeline:
                     "profile": profile.to_dict()})
                 log.info("stack: %s", profile.to_dict())
 
-            with self._stage("2-localization"):
+            with self._stage("2a-brief-analysis"):
+                spec = analyze_brief(self.llm, cfg.brief, [f.rel_path for f in tree.trusted_files])
+                write_json(self.evidence_dir / "brief_spec.json", spec.to_dict())
+                log.info("requirements: %s", [f"{r.id}:{r.title[:60]}" for r in spec.requirements])
+                for a in spec.assumptions:
+                    self.limitations.append(f"assumption: {a}")
+                for q in spec.ambiguities:
+                    self.limitations.append(f"ambiguity: {q}")
+
+            with self._stage("2b-localization"):
                 ctx: ContextPackage = localize(
-                    tree, cfg.brief, llm=self.llm, index_dir=self.work_dir / "index", embedder=self.embedder,
+                    tree, cfg.brief, spec=spec, index_dir=self.work_dir / "index", embedder=self.embedder,
                     backend=self.search_backend, max_files=cfg.limits.max_context_files,
                     max_chars=cfg.limits.max_context_chars)
                 write_json(self.evidence_dir / "localization.json", ctx.summary())
                 log.info("context files: %s", [f.path for f in ctx.files])
 
-            engine = SynthesisEngine(self.llm, brief=cfg.brief, profile=profile,
+            engine = SynthesisEngine(self.llm, brief=cfg.brief, profile=profile, spec=spec,
                                      instruction_language=cfg.language_name, difficulty=cfg.difficulty)
             env_builder = PythonEnvironmentBuilder()
             with self._stage("3-synthesis"):
@@ -115,7 +126,7 @@ class Pipeline:
                 materialize(self.task_dir, syn)
                 manifest = syn.manifest
                 write_json(self.evidence_dir / "synthesis.json", {"root_cause": syn.root_cause, "notes": syn.notes,
-                                                                   "manifest": syn.manifest,
+                                                                   "manifest": syn.manifest, "coverage": syn.coverage,
                                                                    "extra_pip_packages": syn.extra_pip_packages})
 
             with self._stage("4-environment"):
@@ -136,32 +147,76 @@ class Pipeline:
                 need_build = True
                 packages = list(syn.extra_pip_packages)
                 with self._stage("5-convergence"):
+                    heal_rejection: str | None = None   # validator verdict on the last healed bundle
                     for attempt in range(cfg.limits.max_retries + 1):
                         attempts = attempt + 1
-                        log.info("verification attempt %d/%d", attempts, cfg.limits.max_retries + 1)
-                        report = verifier.verify(manifest, need_build=need_build)
-                        if not report.build_ok:
-                            # apt/pip mirrors flake: one immediate rebuild before judging the bundle
-                            log.warning("docker build failed, retrying the build once")
-                            shutil.copy2(self.evidence_dir / "build.log", self.evidence_dir / "build.first-try.log")
-                            report = verifier.verify(manifest, need_build=True)
-                        write_json(self.evidence_dir / "verification.json", report.to_dict())
-                        if report.ok:
-                            break
-                        log.warning("verification failed: %s", " | ".join(p[:200] for p in report.problems))
-                        if not report.build_ok and not packages:
-                            # nothing in the bundle influences the image -> healing cannot help
-                            raise PipelineError("environment image failed to build (see evidence/build.log)")
+                        if heal_rejection is None:
+                            log.info("verification attempt %d/%d", attempts, cfg.limits.max_retries + 1)
+                            report = verifier.verify(manifest, need_build=need_build)
+                            if not report.build_ok:
+                                # apt/pip mirrors flake: one immediate rebuild before judging the bundle
+                                log.warning("docker build failed, retrying the build once")
+                                shutil.copy2(self.evidence_dir / "build.log", self.evidence_dir / "build.first-try.log")
+                                report = verifier.verify(manifest, need_build=True)
+                            write_json(self.evidence_dir / "verification.json", report.to_dict())
+                            if report.ok:
+                                break
+                            log.warning("verification failed: %s", " | ".join(p[:200] for p in report.problems))
+                            if not report.build_ok and not packages:
+                                # nothing in the bundle influences the image -> healing cannot help
+                                raise PipelineError("environment image failed to build (see evidence/build.log)")
+                            self._archive_attempt(attempts)
+                            moved = auto_recategorize(report, syn.manifest)
+                            if moved:
+                                log.info("auto-recategorized %d leaky fail_to_pass test(s) to pass_to_pass: %s", len(moved), moved)
+                                reclassify_from_base_run(spec, syn.coverage, report.base.table)
+                                write_json(self.evidence_dir / "brief_spec.json", spec.to_dict())
+                                materialize(self.task_dir, syn)
+                                manifest = syn.manifest
+                                write_json(self.evidence_dir / "synthesis.json", {"root_cause": syn.root_cause, "notes": syn.notes,
+                                                                                   "manifest": syn.manifest, "coverage": syn.coverage,
+                                                                                   "extra_pip_packages": syn.extra_pip_packages,
+                                                                                   "auto_recategorized": moved})
+                                need_build = False
+                                continue    # re-verify without spending an LLM round
+                        else:
+                            # the previous healed bundle never reached the sandbox: re-verifying the old one is
+                            # pointless, ask the model again with the validator's verdict attached
+                            log.info("healing attempt %d/%d (bundle rejected by validator, no sandbox run)",
+                                     attempts, cfg.limits.max_retries + 1)
                         if attempt == cfg.limits.max_retries:
                             break
-                        self._archive_attempt(attempts)
+                        problems = list(report.problems)
+                        if heal_rejection:
+                            problems.append(f"your previous corrected bundle was rejected before execution: {heal_rejection}")
+                        if report.base is not None:
+                            notes = reclassify_from_base_run(spec, syn.coverage, report.base.table)
+                            if notes:
+                                log.info("reclassified requirements: %s", notes)
+                                write_json(self.evidence_dir / "brief_spec.json", spec.to_dict())
+                                problems = notes + problems
                         try:
-                            syn = engine.heal(ctx, syn, report.problems, report.logs, max_chars=cfg.limits.max_context_chars)
+                            healed = engine.heal(ctx, syn, problems, report.logs, max_chars=cfg.limits.max_context_chars)
                         except SynthesisError as exc:
                             log.warning("healing produced an invalid bundle: %s", exc)
+                            heal_rejection = str(exc)[:2000]
                             continue
+                        if healed.solve_sh.strip() != syn.solve_sh.strip() and not solution_change_justified(report):
+                            # guard against "fixing" a wrong test by bending the reference solution
+                            heal_rejection = ("solve.sh was modified although every failure was on the BASE run "
+                                              "(pass_to_pass / anti_cheat failing on the original code, or fail_to_pass "
+                                              "passing on it). Those are TEST defects: keep solve.sh exactly as it was "
+                                              "and fix the tests / categorisation instead.")
+                            log.warning("healed bundle rejected: unjustified solve.sh change")
+                            continue
+                        syn = healed
+                        heal_rejection = None
                         materialize(self.task_dir, syn)
                         manifest = syn.manifest
+                        write_json(self.evidence_dir / "synthesis.json", {"root_cause": syn.root_cause, "notes": syn.notes,
+                                                                           "manifest": syn.manifest, "coverage": syn.coverage,
+                                                                           "extra_pip_packages": syn.extra_pip_packages,
+                                                                           "healed_attempt": attempts})
                         need_build = (not report.build_ok) or syn.extra_pip_packages != packages
                         packages = list(syn.extra_pip_packages)
                         if need_build:

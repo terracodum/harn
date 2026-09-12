@@ -43,8 +43,12 @@ def test_pipeline_packages_task(generated):
     assert set(toml["fail_to_pass"]).isdisjoint(toml["pass_to_pass"])
     usage = json.loads((out / "evidence/llm_usage.json").read_text())
     assert usage["total_calls"] == 2
-    assert {c["purpose"] for c in usage["calls"]} == {"localize", "synthesize"}
+    assert {c["purpose"] for c in usage["calls"]} == {"analyze_brief", "synthesize"}
     assert (out / "evidence/profile.json").exists() and (out / "evidence/summary.json").exists()
+    spec = json.loads((out / "evidence/brief_spec.json").read_text(encoding="utf-8"))
+    assert [r["id"] for r in spec["requirements"]] == ["R1", "R2"]
+    synth = json.loads((out / "evidence/synthesis.json").read_text(encoding="utf-8"))
+    assert {c["requirement_id"] for c in synth["coverage"]} == {"R1", "R2"}
     dockerfile = (task / "environment/Dockerfile").read_text()
     assert "pip install -e ." in dockerfile and "postgresql" not in dockerfile
     assert b"\r\n" not in (task / "tests/test.sh").read_bytes()

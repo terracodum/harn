@@ -1,4 +1,25 @@
 {
+  "analyze_brief": {
+    "summary": "Settled refunds must decrease the net balance at daily close instead of increasing it.",
+    "brief_language": "ru",
+    "requirements": [
+      {"id": "R1", "title": "Settled refunds are subtracted from the net balance",
+       "statement": "net_balance returns settled payments minus settled refunds",
+       "acceptance_criteria": ["payment 100 + refund 30 -> 70", "single refund 7.50 -> -7.50", "refund settled exactly at close time is subtracted"],
+       "kind": "bug", "testable": true},
+      {"id": "R2", "title": "Unsettled operations stay ignored",
+       "statement": "operations without settled_at or settled after now are excluded from the balance",
+       "acceptance_criteria": ["settled_at None -> ignored", "settled_at after now -> ignored"],
+       "kind": "invariant", "testable": true}
+    ],
+    "constraints": ["public signatures of net_balance and is_settled unchanged", "Transaction dataclass fields unchanged"],
+    "out_of_scope": [],
+    "entities": ["net_balance", "is_settled", "refund", "payment", "settled_at", "Transaction"],
+    "search_queries": ["refund settled net balance daily close", "net_balance refund amount subtract"],
+    "candidate_files": ["ledger/netting.py", "ledger/models.py"],
+    "assumptions": [],
+    "ambiguities": []
+  },
   "localize": {
     "search_queries": [
       "refund settled net balance daily close",
@@ -31,6 +52,13 @@
     "anti_cheat": [
       "tests/test_netting_refunds.py::test_public_signatures_unchanged",
       "tests/test_netting_refunds.py::test_transaction_dto_unchanged"
+    ],
+    "coverage": [
+      {"requirement_id": "R1", "tests": [
+        "tests/test_netting_refunds.py::test_settled_refund_reduces_balance",
+        "tests/test_netting_refunds.py::test_mixed_payments_and_refunds",
+        "tests/test_netting_refunds.py::test_refund_settled_exactly_at_close_is_subtracted"]},
+      {"requirement_id": "R2", "tests": ["tests/test_netting_refunds.py::test_unsettled_operations_are_ignored"]}
     ],
     "extra_pip_packages": [],
     "notes": "demo bundle"

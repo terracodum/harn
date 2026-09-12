@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,44 @@ from harness.providers.python.verifier_template import CATEGORIES
 from harness.validation.docker_runner import DockerRunner, Mount, ProcResult
 
 log = logging.getLogger(__name__)
+
+_ENV_REASON = re.compile(r"async def functions are not natively supported|SyntaxError|IndentationError|"
+                         r"ModuleNotFoundError|ImportError|fixture '.*' not found|No module named", re.IGNORECASE)
+
+
+def solution_change_justified(report: "VerificationReport") -> bool:
+    """solve.sh may only be rewritten by the healing round when the ORACLE side complained for a
+    business reason: a fail_to_pass test fails after the solution with a real assertion (the fix is
+    incomplete) or solve.sh itself crashed. Base-side failures and environment errors (missing
+    plugin, syntax/import errors in a test) are test defects, never a reason to touch the solution."""
+    for p in report.problems:
+        if not p.startswith("oracle:"):
+            continue
+        if "solve.sh exited" in p:
+            return True
+        if "fail_to_pass test" in p and not _ENV_REASON.search(p):
+            return True
+    return False
+
+
+def auto_recategorize(report: "VerificationReport", manifest: dict[str, list[str]]) -> list[str]:
+    """Deterministic fix that needs no LLM: a fail_to_pass test that passes both on the original
+    code and after the solution is by definition pass_to_pass. Moves such tests and returns the
+    moved ids. Only applies when EVERY reported problem is of that single kind."""
+    if report.base is None or report.oracle is None:
+        return []
+    leaky = [t for t in manifest["fail_to_pass"]
+             if report.base.table.get(t) == "passed" and report.oracle.table.get(t) == "passed"]
+    if not leaky:
+        return []
+    explained = {f"base: fail_to_pass test passed on original code: {t}" for t in leaky}
+    other = [p for p in report.problems if p not in explained and not p.startswith("base: reward=")]
+    if other or len(leaky) == len(manifest["fail_to_pass"]):
+        return []          # something else is wrong, or nothing would be left in fail_to_pass
+    manifest["fail_to_pass"] = [t for t in manifest["fail_to_pass"] if t not in leaky]
+    manifest["pass_to_pass"] = manifest["pass_to_pass"] + leaky
+    return leaky
+
 
 _ORACLE_CMD = ("sh /solution/solve.sh >/logs/solve.log 2>&1; echo $? >/logs/solve_exit.txt; "
                "sh /tests/test.sh {category}")
