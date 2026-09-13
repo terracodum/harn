@@ -62,6 +62,13 @@ def _int(raw: dict[str, Any], key: str, default: int, *, minimum: int = 0) -> in
     return value
 
 
+def _bool(raw: dict[str, Any], key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"limits.{key} must be true or false")
+    return value
+
+
 @dataclass(frozen=True)
 class Limits:
     # protocol fields
@@ -75,6 +82,9 @@ class Limits:
     max_retries: int = 3                 # self-healing iterations
     max_context_files: int = 10          # top-N implementation files passed to the LLM
     max_context_chars: int = 120_000
+    # When healing is exhausted, drop the requirements that never converged (their solve step,
+    # tests and paragraph of instruction.md) and ship the rest, recorded in result.json limitations.
+    prune_unconverged: bool = True
 
     @property
     def run_timeout_sec(self) -> int:
@@ -98,6 +108,7 @@ class Limits:
             max_retries=_int(raw, "max_retries", defaults.max_retries),
             max_context_files=_int(raw, "max_context_files", defaults.max_context_files, minimum=1),
             max_context_chars=_int(raw, "max_context_chars", defaults.max_context_chars, minimum=1000),
+            prune_unconverged=_bool(raw, "prune_unconverged", defaults.prune_unconverged),
         )
 
     def to_protocol_dict(self) -> dict[str, int]:

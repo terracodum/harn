@@ -3,20 +3,51 @@
     "summary": "Settled refunds must decrease the net balance at daily close instead of increasing it.",
     "brief_language": "ru",
     "requirements": [
-      {"id": "R1", "title": "Settled refunds are subtracted from the net balance",
-       "statement": "net_balance returns settled payments minus settled refunds",
-       "acceptance_criteria": ["payment 100 + refund 30 -> 70", "single refund 7.50 -> -7.50", "refund settled exactly at close time is subtracted"],
-       "kind": "bug", "testable": true},
-      {"id": "R2", "title": "Unsettled operations stay ignored",
-       "statement": "operations without settled_at or settled after now are excluded from the balance",
-       "acceptance_criteria": ["settled_at None -> ignored", "settled_at after now -> ignored"],
-       "kind": "invariant", "testable": true}
+      {
+        "id": "R1",
+        "title": "Settled refunds are subtracted from the net balance",
+        "statement": "net_balance returns settled payments minus settled refunds",
+        "acceptance_criteria": [
+          "payment 100 + refund 30 -> 70",
+          "single refund 7.50 -> -7.50",
+          "refund settled exactly at close time is subtracted"
+        ],
+        "kind": "bug",
+        "testable": true
+      },
+      {
+        "id": "R2",
+        "title": "Unsettled operations stay ignored",
+        "statement": "operations without settled_at or settled after now are excluded from the balance",
+        "acceptance_criteria": [
+          "settled_at None -> ignored",
+          "settled_at after now -> ignored"
+        ],
+        "kind": "invariant",
+        "testable": true
+      }
     ],
-    "constraints": ["public signatures of net_balance and is_settled unchanged", "Transaction dataclass fields unchanged"],
+    "constraints": [
+      "public signatures of net_balance and is_settled unchanged",
+      "Transaction dataclass fields unchanged"
+    ],
     "out_of_scope": [],
-    "entities": ["net_balance", "is_settled", "refund", "payment", "settled_at", "Transaction"],
-    "search_queries": ["refund settled net balance daily close", "net_balance refund amount subtract"],
-    "candidate_files": ["ledger/netting.py", "ledger/models.py"],
+    "entities": [
+      "net_balance",
+      "is_settled",
+      "refund",
+      "payment",
+      "settled_at",
+      "Transaction"
+    ],
+    "search_queries": [
+      "refund settled net balance daily close",
+      "net_balance refund amount subtract"
+    ],
+    "candidate_files": [
+      "ledger/netting.py",
+      "ledger/models.py"
+    ],
     "assumptions": [],
     "ambiguities": []
   },
@@ -26,12 +57,27 @@
       "net_balance refund amount subtract",
       "Transaction settled_at kind refund payment"
     ],
-    "keywords": ["net_balance", "is_settled", "refund", "payment", "settled_at", "Transaction"],
-    "candidate_files": ["ledger/netting.py", "ledger/models.py"]
+    "keywords": [
+      "net_balance",
+      "is_settled",
+      "refund",
+      "payment",
+      "settled_at",
+      "Transaction"
+    ],
+    "candidate_files": [
+      "ledger/netting.py",
+      "ledger/models.py"
+    ]
   },
   "synthesize": {
     "root_cause": "In ledger/netting.py net_balance() adds tx.amount for refunds instead of subtracting it, so settled refunds inflate the daily-close balance.",
-    "solve_sh": "#!/bin/sh\nset -eu\npython - <<'PY'\nfrom pathlib import Path\np = Path(\"ledger/netting.py\")\ns = p.read_text(encoding=\"utf-8\")\nold = \"        if tx.kind == \\\"refund\\\":\\n            total += tx.amount\\n\"\nnew = \"        if tx.kind == \\\"refund\\\":\\n            total -= tx.amount\\n\"\nassert old in s, \"expected snippet not found\"\np.write_text(s.replace(old, new, 1), encoding=\"utf-8\")\nPY\n",
+    "solve_steps": [
+      {
+        "requirement_id": "R1",
+        "script": "#!/bin/sh\nset -eu\npython - <<'PY'\nfrom pathlib import Path\np = Path(\"ledger/netting.py\")\ns = p.read_text(encoding=\"utf-8\")\nold = \"        if tx.kind == \\\"refund\\\":\\n            total += tx.amount\\n\"\nnew = \"        if tx.kind == \\\"refund\\\":\\n            total -= tx.amount\\n\"\nassert old in s, \"expected snippet not found\"\np.write_text(s.replace(old, new, 1), encoding=\"utf-8\")\nPY\n"
+      }
+    ],
     "instruction_md": "# Корректный учёт возвратов при суточном закрытии\n\n## Контекст\nМодуль `ledger` считает нетто-баланс на момент суточного закрытия. Операция `Transaction` имеет вид `payment` или `refund`, сумму `amount` (Decimal) и момент расчёта `settled_at`.\n\n## Проблема\nПри закрытии дня возвраты со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи учитываются верно.\n\n## Требуемое поведение\n- `net_balance(transactions, now)` возвращает сумму settled-платежей минус сумму settled-возвратов.\n- Операция считается settled, если `settled_at` задан и не позже `now` (включительно).\n- Операции без `settled_at` или с `settled_at` позже `now` в расчёт не входят.\n- Результат — `Decimal`; при отсутствии операций возвращается `Decimal(\"0\")`.\n\n## Ограничения\n- Публичные сигнатуры `net_balance` и `is_settled` не менять.\n- Модель `Transaction` (имена и порядок полей) не менять.\n- Не добавлять внешние зависимости.\n\n## Проверка\nСуществующие тесты запускаются командой `pytest` из корня репозитория и должны проходить.\n",
     "test_files": [
       {
@@ -54,11 +100,20 @@
       "tests/test_netting_refunds.py::test_transaction_dto_unchanged"
     ],
     "coverage": [
-      {"requirement_id": "R1", "tests": [
-        "tests/test_netting_refunds.py::test_settled_refund_reduces_balance",
-        "tests/test_netting_refunds.py::test_mixed_payments_and_refunds",
-        "tests/test_netting_refunds.py::test_refund_settled_exactly_at_close_is_subtracted"]},
-      {"requirement_id": "R2", "tests": ["tests/test_netting_refunds.py::test_unsettled_operations_are_ignored"]}
+      {
+        "requirement_id": "R1",
+        "tests": [
+          "tests/test_netting_refunds.py::test_settled_refund_reduces_balance",
+          "tests/test_netting_refunds.py::test_mixed_payments_and_refunds",
+          "tests/test_netting_refunds.py::test_refund_settled_exactly_at_close_is_subtracted"
+        ]
+      },
+      {
+        "requirement_id": "R2",
+        "tests": [
+          "tests/test_netting_refunds.py::test_unsettled_operations_are_ignored"
+        ]
+      }
     ],
     "extra_pip_packages": [],
     "notes": "demo bundle"

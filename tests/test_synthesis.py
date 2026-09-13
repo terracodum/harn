@@ -3,14 +3,17 @@ import json
 
 import pytest
 
-from harness.core.synthesis import SynthesisError, materialize, parse_synthesis
+from harness.core.brief import parse_brief_spec
+from harness.core.synthesis import SynthesisError, instruction_problems, materialize, parse_synthesis
 
 
 def test_parse_demo_bundle(mock_responses):
     syn = parse_synthesis(mock_responses["synthesize"])
     assert "tests/test_netting_refunds.py" in syn.test_files
     assert len(syn.manifest["fail_to_pass"]) == 3
+    assert syn.solution.order == ["R1"]
     assert syn.solve_sh.startswith("#!/bin/sh")
+    assert syn.to_dict()["solve_steps"][0]["requirement_id"] == "R1"
 
 
 def test_uncategorised_test_rejected(mock_responses):
@@ -32,6 +35,8 @@ def test_spoiler_in_instruction_rejected(mock_responses):
     data["instruction_md"] += "\nСм. solve.sh"
     with pytest.raises(SynthesisError, match="solve.sh"):
         parse_synthesis(data)
+    assert instruction_problems("short") == ["instruction_md is too short"]
+    assert instruction_problems("x" * 100 + " see solve_R2.sh") == ["instruction_md mentions 'solve_r'"]
 
 
 def test_empty_init_allowed(mock_responses):
@@ -58,12 +63,48 @@ def test_bad_test_path_rejected(mock_responses):
         parse_synthesis(data)
 
 
-def test_materialize_writes_lf_files(tmp_path, mock_responses):
+def test_solve_steps_must_match_the_spec(mock_responses):
+    spec = parse_brief_spec(mock_responses["analyze_brief"])      # R1 bug, R2 invariant
+    data = copy.deepcopy(mock_responses["synthesize"])
+    parse_synthesis(data, spec)
+    data["solve_steps"].append({"requirement_id": "R2", "script": "echo no\n"})
+    with pytest.raises(SynthesisError, match="R2 is invariant and must not have a step"):
+        parse_synthesis(data, spec)
+    data["solve_steps"] = [{"requirement_id": "R7", "script": "echo\n"}]
+    with pytest.raises(SynthesisError) as exc:
+        parse_synthesis(data, spec)
+    assert "R1 (bug) has no step" in str(exc.value) and "unknown requirement R7" in str(exc.value)
+    data["solve_steps"] = []
+    with pytest.raises(SynthesisError, match="solve_steps is empty"):
+        parse_synthesis(data, spec)
+
+
+def test_materialize_writes_step_chain(tmp_path, mock_responses):
     syn = parse_synthesis(mock_responses["synthesize"])
     task = tmp_path / "task"
     materialize(task, syn)
     assert (task / "tests" / "test_netting_refunds.py").exists()
-    assert b"\r\n" not in (task / "solution" / "solve.sh").read_bytes()
+    solution = task / "solution"
+    assert {p.name for p in solution.glob("*.sh")} == {"solve.sh", "solve_R1.sh"}
+    assert b"\r\n" not in (solution / "solve.sh").read_bytes()
+    assert "solve_R1.sh" in (solution / "solve.sh").read_text()
     manifest = json.loads((task / "tests" / "manifest.json").read_text())
     assert set(manifest) == {"fail_to_pass", "pass_to_pass", "anti_cheat"}
     assert (task / "instruction.md").read_text(encoding="utf-8").startswith("# ")
+
+
+def test_prune_requirement_removes_step_tests_and_orphan_files(mock_responses):
+    data = copy.deepcopy(mock_responses["synthesize"])
+    data["solve_steps"].append({"requirement_id": "R3", "script": "echo r3\n"})
+    data["test_files"].append({"path": "tests/test_r3.py", "content": "def test_r3():\n    assert 1\n"})
+    data["fail_to_pass"].append("tests/test_r3.py::test_r3")
+    data["coverage"].append({"requirement_id": "R3", "tests": ["tests/test_r3.py::test_r3",
+                                                                "tests/test_netting_refunds.py::test_unsettled_operations_are_ignored"]})
+    syn = parse_synthesis(data)
+    removed = syn.prune_requirement("R3", "never converged")
+    assert removed == ["tests/test_r3.py::test_r3"]          # the shared test stays: R2 still uses it
+    assert syn.solution.order == ["R1"] and syn.solution.pruned == {"R3": "never converged"}
+    assert "tests/test_r3.py" not in syn.test_files
+    assert "tests/test_r3.py::test_r3" not in syn.manifest["fail_to_pass"]
+    assert "tests/test_netting_refunds.py::test_unsettled_operations_are_ignored" in syn.manifest["pass_to_pass"]
+    assert {c["requirement_id"] for c in syn.coverage} == {"R1", "R2"}
