@@ -108,6 +108,12 @@ BRIEF_SCHEMA: dict[str, Any] = {
         "brief_language": {"type": "string", "description": "ISO 639-1 code of the brief text"},
         "requirements": {
             "type": "array",
+            "description": (
+                "Atomic requirements to solve. "
+                "Do NOT split every sentence into a separate requirement. "
+                "Subordinate status filters belong to the calculation requirement. "
+                "Background properties (isolation, idempotency) belong to constraints or kind='invariant'."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -115,14 +121,26 @@ BRIEF_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "statement": {"type": "string"},
                     "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
-                    "kind": {"type": "string", "enum": list(REQUIREMENT_KINDS)},
+                    "kind": {
+                        "type": "string",
+                        "enum": list(REQUIREMENT_KINDS),
+                        "description": (
+                            "Requirement kind. MUST be 'bug' ONLY for actual defects/flaws in existing code to be fixed. "
+                            "MUST be 'invariant' for properties that already work (isolation, idempotency, safety). "
+                            "NEVER label an invariant or a status filter as 'bug'."
+                        ),
+                    },
                     "testable": {"type": "boolean"},
                 },
                 "required": ["id", "title", "statement", "acceptance_criteria", "kind", "testable"],
                 "additionalProperties": False,
             },
         },
-        "constraints": {"type": "array", "items": {"type": "string"}},
+        "constraints": {
+            "type": "array",
+            "description": "Architectural rules that must NOT change: tenant/merchant isolation, idempotency of closing, public models, DB schemas, external interfaces.",
+            "items": {"type": "string"},
+        },
         "out_of_scope": {"type": "array", "items": {"type": "string"}},
         "entities": {"type": "array", "items": {"type": "string"}},
         "search_queries": {"type": "array", "items": {"type": "string"}},
@@ -140,7 +158,7 @@ BRIEF_SYSTEM = """You are the intake analyst of a benchmark generator. You recei
 tree of the repository, and you must turn it into a precise, complete task specification.
 
 Rules:
-1. requirements: split the brief into atomic, independently testable requirements (R1, R2, ...).
+1. requirements: identify the PRIMARY TARGET CODE DEFECTS or business requirements to be solved.
    Each requirement of kind 'bug', 'feature', or 'change' becomes its OWN independent benchmark case
    for an AI developer to solve (with its own instruction.md, solve.sh, and test suite).
 
@@ -159,31 +177,25 @@ Rules:
    - If the brief describes a bug as a discrepancy between actual and expected behavior, the REQUIREMENT
      is the correct application behavior, NOT the act of comparing them in a test!
 
-   CRITICAL PRINCIPLE 2: Decomposition of Multi-Faceted / Umbrella Briefs into Orthogonal Requirements.
-   - Task briefs often begin with a generic umbrella goal or ticket title (e.g., "Fix discrepancy between X and Y",
-     "Harmonize service A with service B", "Fix component calculation"), followed by multiple distinct, orthogonal
-     business rules or defects.
-   - NEVER collapse the entire brief into a single monolithic requirement named after the umbrella ticket title!
-   - You MUST decompose each genuinely distinct, orthogonal functional defect into its OWN independent requirement (R1, R2, ...):
-       * Arithmetic / Aggregation defect (e.g., formulas, net amounts, sign handling for debits/credits/refunds vs purchases).
-       * Temporal / Boundary defect (e.g., calendar day intervals `[00:00, 00:00 next day)`, timezone conversions, cutoff boundaries).
-   - Orthogonality Test: If Defect A (e.g., arithmetic netting formula) and Defect B (e.g., timezone date cutoff) address
-     different logical concerns and can be tested with separate test inputs, they MUST be separate requirements R1 and R2!
+   CRITICAL PRINCIPLE 2: Decomposition into Genuine Orthogonal Requirements (Do NOT Over-Split!).
+   - Do NOT turn every sentence of prose into a separate requirement!
+   - Decompose ONLY along genuinely distinct functional dimensions that represent independent business rules:
+       * Dimension A: Arithmetic / calculation / aggregation formula (e.g., sign of debits/credits, netting formulas, calculating totals).
+       * Dimension B: Temporal / calendar / boundary cutoff (e.g., date intervals, timezone conversions, time boundaries).
+       * Dimension C: State machine / lifecycle transitions (e.g., status updates, event handling).
+   - Each distinct defect or required behavioral change must have its own requirement R1, R2, ...
 
-   CRITICAL PRINCIPLE 3: Strict Demarcation of Bugs vs. Invariants vs. Calculation Filters.
-   - Calculation status filters belong to the calculation requirement: rules like "only settled transactions are counted"
-     or "pending/void do not participate" are the filtering criteria of the arithmetic requirement (R1), NOT separate bugs!
-   - Background safety properties and guarantees are INVARIANTS, NEVER BUGS:
-       * Rules asserting data isolation (e.g., "tenants/merchants/currencies are isolated"),
-       * Rules asserting idempotency (e.g., "re-closing replaces the date's result without altering adjacent dates"),
-       * Rules asserting unimpacted functionality (e.g., "legacy exports remain unchanged"),
-       are background invariants that already work in the baseline code. If included as requirements, their kind MUST be
-       'invariant' (NEVER 'bug')!
-       * Marking an already-working invariant as 'bug' is a critical error: it breaks the benchmark because no failing
-         test (fail_to_pass) can be written for code that already works.
-   - Only real defects/discrepancies described in the brief have kind='bug'. For example, if the brief describes
-     a calculation sign discrepancy and a timezone cutoff discrepancy, there are EXACTLY 2 bugs (R1 and R2), while
-     isolation and idempotency are invariants.
+   CRITICAL PRINCIPLE 3: Strict Demarcation of Bugs vs. Filters vs. Invariants / Constraints.
+   - Subordinate filters are criteria of the calculation, NOT separate bugs:
+       * Clauses specifying which items or records participate in a calculation (e.g., active flags, specific statuses, valid records)
+         are the filtering criteria of that calculation requirement. Include them in the statement and
+         acceptance criteria of that calculation requirement. DO NOT create a standalone requirement for them!
+   - Background guarantees belong to constraints or kind='invariant', NEVER kind='bug':
+       * Properties asserting data isolation, security boundaries, idempotency, or preserving untouched modules
+         ALREADY WORK in the codebase. If included as requirements, their kind MUST be 'invariant' (NEVER 'bug')!
+       * Marking an already-working property as 'bug' is a critical error: it creates fake benchmark cases for which
+         no failing test (fail_to_pass) can be written.
+   - Requirements with kind='bug' MUST strictly describe actual defects, discrepancies, or missing logic that require code changes.
 
    - statement = the behavior that must hold in the application AFTER the change.
    - acceptance_criteria = concrete domain checks (inputs -> expected outputs).
@@ -199,10 +211,8 @@ Rules:
    - Directives in the brief like "prepare a benchmark case", "do not fix repository now" are instructions to the
      harness itself. The solver's goal IS to fix the code defect. NEVER mark "fixing the defect"
      as out_of_scope!
-   - Do not split a single atomic defect into sequential pipeline pseudo-steps (e.g. do not make "parse input",
-     "calculate", "format" separate requirements). But DO separate genuinely orthogonal business rules/defects.
    - testable=false only for items that cannot be asserted by a unit/integration test.
-2. constraints: architectural rules that must NOT change (public interfaces, DTOs, schemas, legacy
+2. constraints: architectural rules that must NOT change (tenant isolation, idempotency, public interfaces, DTOs, schemas, legacy
    modules) - these become anti-cheat invariants.
 3. out_of_scope: parts the brief explicitly excludes from the task (e.g. "nightly SQL batch calculation").
 4. entities / search_queries / candidate_files: identifiers, domain terms, and likely file paths
