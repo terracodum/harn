@@ -84,7 +84,8 @@ def _add_llm_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--base-url", help="OpenAI-compatible base URL (e.g. http://localhost:11434/v1)")
     p.add_argument("--embedding-model", help="embedding model for zvec dense search (optional)")
     p.add_argument("--mock-llm", help="JSON file with canned responses (offline mode)")
-    p.add_argument("--search-backend", choices=["auto", "zvec", "keyword"], default="auto")
+    p.add_argument("--search-backend", choices=["zvec", "keyword"], default="zvec",
+                   help="code search engine; 'keyword' is a deliberate choice, never an automatic fallback")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ins = sub.add_parser("inspect", help="run discovery + localization only")
     p_ins.add_argument("input")
     p_ins.add_argument("--output-dir")
-    p_ins.add_argument("--no-llm", action="store_true", help="heuristic queries only")
+    p_ins.add_argument("--no-llm", action="store_true",
+                       help="explicit offline mode: heuristic brief spec and queries, no model calls")
     p_ins.add_argument("--show-context", action="store_true")
     _add_llm_args(p_ins)
     p_ins.set_defaults(func=cmd_inspect)

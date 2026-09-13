@@ -6,7 +6,8 @@ Search backends (chosen by `build_index(..., backend=...)`):
                 optional dense vector (OpenAI-compatible /v1/embeddings),
                 fused with reciprocal rank fusion. This is the in-process
                 equivalent of a `zvec_grep_search` tool, no MCP involved.
-  * "keyword" - dependency-free scorer, used when zvec is unavailable.
+  * "keyword" - dependency-free scorer; selected explicitly (`--search-backend keyword`),
+                never substituted silently when zvec is missing.
 """
 from __future__ import annotations
 
@@ -292,18 +293,23 @@ class ZvecIndex:
         self._coll = None
 
 
+SEARCH_BACKENDS = ("zvec", "keyword")
+
+
 def build_index(chunks: list[Chunk], *, index_dir: Path, embedder: Any | None = None,
-                backend: str = "auto") -> SearchIndex:
-    if backend in ("auto", "zvec"):
+                backend: str = "zvec") -> SearchIndex:
+    """The backend is exactly what the caller asked for: a missing zvec is an error, not a
+    silent switch to keyword search."""
+    if backend == "zvec":
         try:
             import zvec  # noqa: F401
-        except ImportError:
-            if backend == "zvec":
-                raise
-            log.warning("zvec not installed; falling back to keyword search")
-        else:
-            return ZvecIndex(chunks, index_dir, embedder)
-    return KeywordIndex(chunks)
+        except ImportError as exc:
+            raise RuntimeError("search backend 'zvec' requested but the zvec package is not importable: "
+                               "pip install zvec, or select --search-backend keyword explicitly") from exc
+        return ZvecIndex(chunks, index_dir, embedder)
+    if backend == "keyword":
+        return KeywordIndex(chunks)
+    raise ValueError(f"unknown search backend {backend!r}; expected one of {', '.join(SEARCH_BACKENDS)}")
 
 
 # --------------------------------------------------------------------- LLM expand
@@ -471,11 +477,12 @@ def assemble_context(tree: ProjectTree, hits: list[ChunkHit], *, queries: list[s
 
 
 def localize(tree: ProjectTree, brief: str, *, index_dir: Path, embedder: Any | None, spec: Any | None = None,
-             llm: Any | None = None, backend: str = "auto", max_files: int = 8, max_chars: int = 80_000) -> ContextPackage:
+             llm: Any | None = None, backend: str = "zvec", max_files: int = 8, max_chars: int = 80_000) -> ContextPackage:
     """Full Stage 2: task spec (or LLM query expansion) -> hybrid search -> context package.
 
     `spec` is a BriefSpec from Stage 2a; when given, its requirements, entities and candidate
-    files drive the search. Without it, `llm` (optional) is used for a one-shot query expansion.
+    files drive the search. Without it, `llm` (optional) is used for a one-shot query expansion;
+    a failed expansion call propagates (`LLMError`) - localisation never degrades silently.
     """
     queries = [brief]
     keywords = extract_terms(brief, limit=25)
@@ -486,13 +493,10 @@ def localize(tree: ProjectTree, brief: str, *, index_dir: Path, embedder: Any | 
         keywords = list(dict.fromkeys([*spec.entities, *keywords]))
         candidates = list(spec.candidate_files)
     elif llm is not None:
-        try:
-            exp = expand_queries(llm, brief, tree)
-            queries += [q for q in exp.get("search_queries", []) if isinstance(q, str) and q.strip()]
-            keywords = list(dict.fromkeys([*keywords, *[k for k in exp.get("keywords", []) if isinstance(k, str)]]))
-            candidates = [c for c in exp.get("candidate_files", []) if isinstance(c, str)]
-        except Exception as exc:  # localisation must never kill the run
-            log.warning("LLM query expansion failed, using heuristics only: %s", exc)
+        exp = expand_queries(llm, brief, tree)
+        queries += [q for q in exp.get("search_queries", []) if isinstance(q, str) and q.strip()]
+        keywords = list(dict.fromkeys([*keywords, *[k for k in exp.get("keywords", []) if isinstance(k, str)]]))
+        candidates = [c for c in exp.get("candidate_files", []) if isinstance(c, str)]
     queries.append(" ".join(keywords))
     chunks = chunk_tree(tree)
     index = build_index(chunks, index_dir=index_dir, embedder=embedder, backend=backend)

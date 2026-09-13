@@ -16,6 +16,7 @@ class LLMCall:
     ok: bool = True
     error: str | None = None
     finish_reason: str | None = None
+    mode: str | None = None      # response_format mode actually used (json_schema | json_object | text)
 
 
 @dataclass

@@ -3,11 +3,16 @@ GigaChat via an OpenAI-compatible proxy, ...).
 
 JSON is requested in the most constrained mode the server supports:
   json_schema -> json_object -> plain text with a JSON instruction.
-Unsupported modes are detected on the first 400 and skipped afterwards.
+A mode is skipped only when the server answers 400 and names `response_format` (or the
+schema) as the reason; the switch is logged and recorded in llm_usage.json. Any other
+error is raised as `LLMError` - the client never re-sends a request under a weaker
+format to paper over an unrelated failure.
 """
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 from typing import Any
 
@@ -16,6 +21,9 @@ from harness.core.llm.base_client import BaseLLMClient, LLMError, check_required
 from harness.core.llm.token_tracker import LLMCall, TokenTracker
 
 _MODES = ("json_schema", "json_object", "text")
+_UNSUPPORTED_FORMAT = re.compile(r"response_format|json_schema|json_object|structured output|structured_output|"
+                                 r"guided_json|schema", re.IGNORECASE)
+log = logging.getLogger(__name__)
 
 
 class OpenAICompatClient(BaseLLMClient):
@@ -78,11 +86,16 @@ class OpenAICompatClient(BaseLLMClient):
                 try:
                     text, resp = self._call(messages, mode, purpose, schema, max_tokens)
                 except self._openai.BadRequestError as exc:
-                    # server does not support this response_format -> try the next mode
+                    self.tracker.record(LLMCall(purpose, self.settings.model, time.monotonic() - started,
+                                                0, 0, ok=False, error=f"{type(exc).__name__}: {exc}", mode=mode))
+                    if mode == "text" or not _UNSUPPORTED_FORMAT.search(str(exc)):
+                        # an unrelated 400 (context too long, bad model id, ...): never mask it by
+                        # re-sending the same request under a weaker response_format
+                        raise LLMError(f"LLM call '{purpose}' rejected by the server (HTTP 400): {exc}") from exc
+                    log.warning("server rejected response_format=%s for '%s' (%s); switching to the next mode",
+                                mode, purpose, str(exc)[:200])
                     self._unsupported.add(mode)
                     last_error = exc
-                    self.tracker.record(LLMCall(purpose, self.settings.model, time.monotonic() - started,
-                                                0, 0, ok=False, error=f"{mode}: {exc}"))
                     break
                 except self._openai.APIError as exc:
                     self.tracker.record(LLMCall(purpose, self.settings.model, time.monotonic() - started,
@@ -97,6 +110,7 @@ class OpenAICompatClient(BaseLLMClient):
                     input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
                     output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
                     finish_reason=resp.choices[0].finish_reason,
+                    mode=mode,
                 )
                 self.tracker.record(call)
                 if call.finish_reason == "length":

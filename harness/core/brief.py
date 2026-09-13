@@ -9,11 +9,16 @@ requirement must end up covered by at least one fail_to_pass test.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from harness.core.errors import PipelineError
+from harness.core.llm.base_client import LLMError
 from harness.localization.entity_extractor import extract_terms
+
+log = logging.getLogger(__name__)
 
 REQUIREMENT_KINDS = ("bug", "feature", "change", "invariant", "performance", "refactor")
 NEEDS_FAIL_TO_PASS = ("bug", "feature", "change")   # behaviour that differs before/after the fix
@@ -42,6 +47,7 @@ class BriefSpec:
     ambiguities: list[str] = field(default_factory=list)      # open questions worth flagging
     brief_language: str = "unknown"
     source: str = "llm"                                       # llm | heuristic
+    pruned: list[dict[str, str]] = field(default_factory=list)  # [{id, title, reason}] removed by the pipeline
 
     @property
     def testable_ids(self) -> list[str]:
@@ -49,6 +55,15 @@ class BriefSpec:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def prune(self, rid: str, reason: str) -> Requirement | None:
+        """Remove a requirement that never converged; it is recorded, not forgotten."""
+        for r in self.requirements:
+            if r.id == rid:
+                self.requirements.remove(r)
+                self.pruned.append({"id": r.id, "title": r.title, "reason": reason})
+                return r
+        return None
 
     def render(self) -> str:
         """Compact block for prompts."""
@@ -127,7 +142,8 @@ Rules:
 
 
 def _heuristic_spec(brief: str) -> BriefSpec:
-    """No-LLM fallback: whole brief = one requirement, sentences = acceptance criteria."""
+    """Heuristic spec for the explicit no-LLM mode (`inspect --no-llm`): whole brief = one
+    requirement, sentences = acceptance criteria. Never used as a fallback for a failed model call."""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", brief) if len(s.strip()) > 15]
     lang = "ru" if re.search(r"[А-Яа-яЁё]", brief) else "en"
     constraints = [s for s in sentences if re.search(r"не (менять|изменя|трогать)|must not|do not change|unchanged|remain", s, re.I)]
@@ -144,21 +160,38 @@ def _heuristic_spec(brief: str) -> BriefSpec:
 
 
 def parse_brief_spec(data: dict[str, Any]) -> BriefSpec:
+    """Strict: every problem in the model reply is reported, nothing is silently coerced or dropped."""
+    problems: list[str] = []
     reqs: list[Requirement] = []
-    for i, item in enumerate(data.get("requirements") or [], 1):
-        if not isinstance(item, dict) or not str(item.get("statement", "")).strip():
+    items = data.get("requirements")
+    if not isinstance(items, list):
+        problems.append("requirements is not a list")
+        items = []
+    for i, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            problems.append(f"requirement #{i} is not an object")
             continue
-        kind = str(item.get("kind", "bug")).lower()
+        statement = str(item.get("statement") or "").strip()
+        if not statement:
+            problems.append(f"requirement #{i} has an empty statement")
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind not in REQUIREMENT_KINDS:
+            problems.append(f"requirement #{i} has unknown kind {kind!r} (expected one of {', '.join(REQUIREMENT_KINDS)})")
+        testable = item.get("testable", True)
+        if not isinstance(testable, bool):
+            problems.append(f"requirement #{i}: testable must be a boolean")
         reqs.append(Requirement(
             id=f"R{i}",  # normalise ids regardless of what the model chose
-            title=str(item.get("title") or item.get("statement"))[:160].strip(),
-            statement=str(item["statement"]).strip(),
+            title=str(item.get("title") or statement)[:160].strip(),
+            statement=statement,
             acceptance_criteria=[str(a).strip() for a in (item.get("acceptance_criteria") or []) if str(a).strip()],
-            kind=kind if kind in REQUIREMENT_KINDS else "bug",
-            testable=bool(item.get("testable", True)),
+            kind=kind,
+            testable=bool(testable),
         ))
     if not reqs:
-        raise ValueError("brief analysis produced no requirements")
+        problems.append("brief analysis produced no requirements")
+    if problems:
+        raise ValueError("; ".join(problems))
 
     def strs(key: str) -> list[str]:
         return [str(v).strip() for v in (data.get(key) or []) if str(v).strip()]
@@ -178,22 +211,33 @@ def parse_brief_spec(data: dict[str, Any]) -> BriefSpec:
     )
 
 
-def analyze_brief(llm: Any | None, brief: str, tree_paths: list[str], *, max_paths: int = 1500) -> BriefSpec:
-    """LLM analysis with heuristic fallback; never raises on model trouble."""
+def analyze_brief(llm: Any | None, brief: str, tree_paths: list[str], *, max_paths: int = 1500,
+                  retries: int = 1) -> BriefSpec:
+    """LLM analysis of the brief.
+
+    `llm=None` is the explicit no-LLM mode (`inspect --no-llm`) and returns the heuristic spec.
+    With a model, a failed or invalid reply is retried `retries` times and then raised as
+    `PipelineError`: there is no heuristic fallback for a broken LLM step."""
     if llm is None:
-        return _heuristic_spec(brief)
-    paths = tree_paths
-    if len(paths) > max_paths:
-        paths = sorted(paths, key=lambda p: (not p.endswith(".py"), p))[:max_paths]
-    user = (f"<brief>\n{brief}\n</brief>\n\n<heuristic_terms>\n{', '.join(extract_terms(brief))}\n</heuristic_terms>\n\n"
-            f"<file_tree>\n" + "\n".join(paths) + "\n</file_tree>\n\nProduce the task specification.")
-    try:
-        data = llm.complete_json(purpose="analyze_brief", system=BRIEF_SYSTEM, user=user,
-                                 schema=BRIEF_SCHEMA, max_tokens=8000)
-        spec = parse_brief_spec(data)
-    except Exception as exc:  # noqa: BLE001 - degrade, do not stop the pipeline
         spec = _heuristic_spec(brief)
-        spec.ambiguities.append(f"LLM brief analysis failed, heuristic spec used: {exc}")
+    else:
+        paths = tree_paths
+        if len(paths) > max_paths:
+            paths = sorted(paths, key=lambda p: (not p.endswith(".py"), p))[:max_paths]
+        user = (f"<brief>\n{brief}\n</brief>\n\n<heuristic_terms>\n{', '.join(extract_terms(brief))}\n</heuristic_terms>\n\n"
+                f"<file_tree>\n" + "\n".join(paths) + "\n</file_tree>\n\nProduce the task specification.")
+        spec = None
+        for attempt in range(retries + 1):
+            try:
+                data = llm.complete_json(purpose="analyze_brief", system=BRIEF_SYSTEM, user=user,
+                                         schema=BRIEF_SCHEMA, max_tokens=8000)
+                spec = parse_brief_spec(data)
+                break
+            except (LLMError, ValueError) as exc:
+                log.warning("analyze_brief attempt %d/%d failed: %s", attempt + 1, retries + 1, exc)
+                if attempt == retries:
+                    raise PipelineError(f"brief analysis failed after {retries + 1} attempt(s): {exc}") from exc
+        assert spec is not None
     # always keep the heuristic terms as extra search material
     spec.entities = list(dict.fromkeys([*spec.entities, *extract_terms(brief, limit=15)]))
     if brief.strip() not in spec.search_queries:
@@ -202,15 +246,19 @@ def analyze_brief(llm: Any | None, brief: str, tree_paths: list[str], *, max_pat
 
 
 def coverage_problems(spec: BriefSpec, coverage: list[dict[str, Any]], manifest: dict[str, list[str]]) -> list[str]:
-    """Every testable requirement needs at least one test (any category).
+    """Coverage rules, decided by the requirement kind from the brief (never re-labelled later):
 
-    Whether a requirement really changes behaviour is decided EMPIRICALLY by the Base run, not by
-    the model's kind label: a fail_to_pass test that passes on the original code is moved to
-    pass_to_pass automatically, and a pass_to_pass test that fails on the original code is sent to
-    healing. Demanding a fail_to_pass test per `bug` requirement up front deadlocks on
-    requirements the code already satisfies, so it is deliberately not enforced here."""
+    * every testable requirement has at least one test;
+    * bug / feature / change requirements have at least one fail_to_pass test - they describe
+      behaviour that differs before and after the fix;
+    * invariant requirements have no fail_to_pass test - they already hold on the original code.
+
+    If the sandbox later shows that a fail_to_pass test passes on the original code, that is a
+    defect of the test (or of the brief analysis) reported to the healing round, not something
+    the harness re-categorises on its own."""
     problems: list[str] = []
     all_ids = {t for c in manifest.values() for t in c}
+    f2p = set(manifest.get("fail_to_pass", []))
     covered: dict[str, set[str]] = {}
     for item in coverage or []:
         rid = str(item.get("requirement_id", "")).strip()
@@ -219,30 +267,23 @@ def coverage_problems(spec: BriefSpec, coverage: list[dict[str, Any]], manifest:
             if t not in all_ids:
                 problems.append(f"coverage: {rid} references unknown test {t}")
         covered.setdefault(rid, set()).update(t for t in tests if t in all_ids)
+    known = {r.id for r in spec.requirements}
+    for rid in covered:
+        if rid not in known:
+            problems.append(f"coverage: unknown requirement id {rid}")
     for r in spec.requirements:
-        if r.testable and not covered.get(r.id):
+        if not r.testable:
+            continue
+        tests = covered.get(r.id) or set()
+        if not tests:
             problems.append(f"coverage: requirement {r.id} ({r.title}) has no tests")
+            continue
+        if r.kind in NEEDS_FAIL_TO_PASS and not tests & f2p:
+            problems.append(f"coverage: requirement {r.id} ({r.title}) is a {r.kind} but has no fail_to_pass test")
+        if r.kind == "invariant" and tests & f2p:
+            problems.append(f"coverage: requirement {r.id} ({r.title}) is an invariant but is covered by "
+                            f"fail_to_pass test(s) {', '.join(sorted(tests & f2p))}")
     return problems
-
-
-def reclassify_from_base_run(spec: BriefSpec, coverage: list[dict[str, Any]],
-                             base_outcomes: dict[str, str]) -> list[str]:
-    """After a Base run: a bug/feature/change requirement whose covering tests ALL pass on the
-    original code is in fact an invariant. Downgrade it so the healing round can move its tests
-    to pass_to_pass instead of fighting the coverage rule. Returns human-readable notes."""
-    notes: list[str] = []
-    by_req: dict[str, list[str]] = {}
-    for item in coverage or []:
-        by_req.setdefault(str(item.get("requirement_id", "")), []).extend(str(t) for t in item.get("tests") or [])
-    for r in spec.requirements:
-        tests = [t for t in by_req.get(r.id, []) if t in base_outcomes]
-        if r.kind in NEEDS_FAIL_TO_PASS and tests and all(base_outcomes[t] == "passed" for t in tests):
-            r.kind = "invariant"
-            notes.append(f"requirement {r.id} ({r.title}) is already satisfied by the original code: "
-                         f"reclassified as invariant - its tests belong to pass_to_pass, not fail_to_pass, and "
-                         f"solve.sh must NOT contain any code change for it (remove such edits; the original "
-                         f"behaviour is correct)")
-    return notes
 
 
 def spec_json(spec: BriefSpec) -> str:
