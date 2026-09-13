@@ -177,22 +177,29 @@ Rules:
      is the correct application behavior, NOT the act of comparing them in a test!
 
    CRITICAL PRINCIPLE 2: Full and Granular Decomposition of All Rules Stated in the Brief.
-   - EVERY independent behavioral rule, formula, or boundary condition stated in the brief MUST be its OWN separate requirement R1, R2, ...
-   - NEVER create a single generic umbrella requirement (such as "Reconcile preview with SQL" or "Align system X with Y") that combines multiple orthogonal rules!
-     Instead, decompose each distinct rule into its own requirement:
-       * Calculation / arithmetic rules (e.g., sign of purchases vs refunds, calculation of net totals) -> MUST be its own R_i.
-       * Temporal / calendar / boundary rules (e.g., half-open interval [00:00, 00:00), timezone conversions, excluding next-day midnight) -> MUST be its own R_j.
-       * Event filtering / eligibility rules (e.g., settled events only, status filters) -> MUST be its own R_k.
-       * Idempotency / state update rules (e.g., repeat close replacing only that date) -> MUST be its own R_m.
+   - EVERY independent behavioral rule, formula, boundary condition, security check, or data transformation
+     stated in the brief MUST be its OWN separate requirement R1, R2, ...
+   - NEVER create a single generic umbrella requirement (such as "Reconcile system X with Y" or "Fix all bugs")
+     that combines multiple orthogonal rules!
+   - Decompose along genuinely distinct functional dimensions (each independent dimension MUST be its own R_i):
+       * Security & Validation: input sanitization, injection prevention (e.g. SQLi, XSS), parameterization, permission checks, schema constraints.
+       * Core Logic & Computation: calculation formulas, arithmetic operations, data transformations, algorithm rules.
+       * Boundaries & Edge Cases: boundary cutoffs, off-by-one limits, range constraints, temporal/calendar intervals, pagination limits.
+       * Concurrency & State Integrity: race conditions, transaction isolation, idempotency of repeated calls, deadlock prevention.
+       * Protocol & Interoperability: serialization, encoding formats, public API contract compliance, error handling.
    - Why granular decomposition is critical:
      * The harness independently investigates and tests each requirement against the repository.
      * True defects become dedicated, focused benchmark cases.
      * Requirements that turn out to already work correctly in the baseline codebase (invariants) are automatically verified and pruned by the harness.
      * Decomposing each rule guarantees that NO defect or rule from the brief is accidentally skipped, concealed, or left unresolved!
 
-   CRITICAL PRINCIPLE 3: Acceptance Criteria Completeness.
+   CRITICAL PRINCIPLE 3: Acceptance Criteria Completeness for Edge Cases and Defect Triggers.
    - Every requirement R_i must have explicit, concrete acceptance criteria (inputs -> expected outputs).
-   - If a requirement involves boundary conditions (e.g., [00:00, 00:00) interval), acceptance_criteria MUST include an explicit check for the exact boundary edge case (e.g., "Events at exactly 00:00 of the next date are excluded").
+   - Acceptance criteria MUST explicitly specify the trigger condition or edge case that exercises the defect:
+       * For security defects: explicit rejection or safe escaping of hostile payloads (e.g. injection strings, malicious input).
+       * For boundary/range defects: explicit expected behavior at the exact boundary values (e.g. inclusive vs exclusive edges).
+       * For calculation/formula defects: explicit expected outputs with mixed/opposing operands (e.g. additive vs subtractive operations).
+       * For state/idempotency defects: explicit assertion on state after repeated or concurrent execution.
 
    - statement = the behavior that must hold in the application AFTER the change.
    - acceptance_criteria = concrete domain checks (inputs -> expected outputs).

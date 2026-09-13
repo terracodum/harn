@@ -108,12 +108,14 @@ Rules:
    Import the project exactly as production code does. No network, no mocks of the code under test.
    Each test function must be listed in EXACTLY one of fail_to_pass / pass_to_pass / anti_cheat using
    ids "tests/test_file.py::test_name" (or "tests/test_file.py::TestClass::test_name").
-   - fail_to_pass: assert the corrected behaviour of the TARGET requirement; MUST fail on the original
-     code by a wrong result (AssertionError / wrong value), never by SyntaxError; MUST pass after the
-     edits. Cover edge cases: interval boundaries, signs, empty inputs, rounding. If the target requirement
-     specifies temporal intervals or boundary cutoffs (e.g. [00:00, 00:00) / half-open interval), fail_to_pass
-     MUST include boundary timestamp events (e.g., at exactly 00:00 of the next date) to exercise the boundary logic.
-     They must not depend on the behaviour of the other cases' requirements (still unfixed in this case).
+    - fail_to_pass: assert the corrected behaviour of the TARGET requirement; MUST fail on the original
+      code by a wrong result (AssertionError / wrong value), never by SyntaxError; MUST pass after the
+      edits. Test specifically the defect mechanism or trigger condition described in <task_spec>, not just nominal happy path:
+        * Security / input validation: pass hostile or unescaped payloads (e.g. injection strings, malicious input, oversized data) that trigger errors on unvalidated code.
+        * Boundary / range cutoffs: pass exact boundary values (e.g. interval edges, off-by-one indices, zero/null limits, boundary timestamps).
+        * Calculation / logic formulas: pass inputs exercising all branches and opposing terms (e.g. mixed positive/negative values, both credits and debits).
+        * Concurrency / idempotency: execute repeated or concurrent operations to expose state or isolation flaws.
+      They must not depend on the behaviour of the other cases' requirements (still unfixed in this case).
    - pass_to_pass: regression tests of the invariant requirements and adjacent behaviour that pass
      before AND after the fix.
    - anti_cheat: constraints that pass before AND after: public function signatures, dataclass/DTO
