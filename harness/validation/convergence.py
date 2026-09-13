@@ -56,6 +56,7 @@ def _tail(path: Path, limit: int = 6000) -> str:
 class VerificationReport:
     ok: bool = False
     build_ok: bool = False
+    already_satisfied: bool = False
     problems: list[str] = field(default_factory=list)
     base: CheckReport | None = None
     oracle: CheckReport | None = None
@@ -65,11 +66,25 @@ class VerificationReport:
 
     def to_dict(self) -> dict:
         return {
-            "ok": self.ok, "build_ok": self.build_ok, "problems": self.problems,
+            "ok": self.ok, "build_ok": self.build_ok, "already_satisfied": self.already_satisfied,
+            "problems": self.problems,
             "base": self.base.to_dict() if self.base else None,
             "oracle": self.oracle.to_dict() if self.oracle else None,
             "isolated": self.isolated, "runs": self.runs,
         }
+
+
+def check_already_satisfied(report: VerificationReport) -> bool:
+    """Returns True if the only failure is that fail_to_pass tests unexpectedly passed on the original code (base)."""
+    if not report.base or not report.oracle:
+        return False
+    oracle_problems = [p for p in report.problems if p.startswith("oracle:")]
+    if oracle_problems:
+        return False
+    base_problems = [p for p in report.problems if p.startswith("base:")]
+    if not base_problems:
+        return False
+    return all("passed on" in p or "reward=1" in p for p in base_problems)
 
 
 class ConvergenceVerifier:
@@ -168,6 +183,8 @@ class ConvergenceVerifier:
                 report.logs["base/container.log"] = _tail(logs_dir / "container.log", 2000)
 
         if report.problems:
+            if check_already_satisfied(report):
+                report.already_satisfied = True
             return report
 
         if self.isolated_runs:

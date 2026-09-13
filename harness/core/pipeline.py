@@ -34,10 +34,11 @@ from harness.validation.docker_runner import DockerRunner
 
 log = logging.getLogger("harness")
 
-__all__ = ["Pipeline", "PipelineError", "CaseOutcome"]
+__all__ = ["Pipeline", "PipelineError", "CaseOutcome", "CASE_READY", "CASE_FAILED", "CASE_PRUNED"]
 
 CASE_READY = "ready"
 CASE_FAILED = "case_failed"
+CASE_PRUNED = "pruned"
 
 
 @dataclass
@@ -45,8 +46,8 @@ class CaseOutcome:
     requirement_id: str
     title: str
     case_id: str
-    path: str                       # relative to output_dir, e.g. cases/R1
-    status: str = CASE_FAILED       # ready | case_failed
+    path: str | None = None          # relative to output_dir, e.g. cases/R1
+    status: str = CASE_FAILED        # ready | case_failed | pruned
     attempts: int = 0
     error: str | None = None
     failed_stage: str | None = None
@@ -54,9 +55,15 @@ class CaseOutcome:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["task_path"] = f"{self.path}/task"
-        d["evidence_path"] = f"{self.path}/evidence"
-        d["result_path"] = f"{self.path}/result.json"
+        if self.status == CASE_PRUNED:
+            d["task_path"] = None
+            d["evidence_path"] = f"evidence/pruned/{self.requirement_id}"
+            d["result_path"] = None
+            d["path"] = None
+        else:
+            d["task_path"] = f"{self.path}/task"
+            d["evidence_path"] = f"{self.path}/evidence"
+            d["result_path"] = f"{self.path}/result.json"
         return d
 
 
@@ -165,14 +172,27 @@ class Pipeline:
             with self._stage("6-packaging"):
                 if snapshot_sha256(cfg.repository) != snapshot_before:
                     raise PipelineError("source repository changed during generation")
-                failed = [c for c in self.cases if c.status != CASE_READY]
+                ready = [c for c in self.cases if c.status == CASE_READY]
+                pruned = [c for c in self.cases if c.status == CASE_PRUNED]
+                failed = [c for c in self.cases if c.status not in (CASE_READY, CASE_PRUNED)]
                 broken = [c for c in failed if c.error]
+
+                for c in pruned:
+                    lim = f"Requirement {c.requirement_id} ('{c.title}') is already satisfied on repository baseline and was pruned."
+                    if lim not in self.limitations:
+                        self.limitations.append(lim)
+
                 if broken:
                     error = (f"{len(broken)} of {len(self.cases)} case(s) failed: "
                              + ", ".join(f"{c.requirement_id} ({c.error})"[:200] for c in broken))
-                elif not failed:
+                elif failed:
+                    # cases packaged but not verified (--skip-docker) - listed in limitations, no error
+                    status = "failed"
+                elif ready:
                     status = "ready"
-                # else: cases packaged but not verified (--skip-docker) - listed in limitations, no error
+                else:
+                    status = "failed"
+                    error = "no valid benchmark cases were synthesized (all requirements were pruned or empty)"
         except LLMError as exc:
             error = f"LLM step failed (stage {self.current_stage}): {exc}"
             log.error("pipeline failed: %s", error)
@@ -229,9 +249,18 @@ class Pipeline:
                                      other_cases=others)
             env_builder = PythonEnvironmentBuilder()
             syn: Synthesis = engine.synthesize(ctx, max_chars=cfg.limits.max_context_chars)
+            self._write_synthesis_evidence(evidence_dir, syn)
+
+            if syn.already_satisfied:
+                log.info("[%s] requirement verified as already satisfied by repository baseline (no defect)", req.id)
+                outcome.status = CASE_PRUNED
+                outcome.error = None
+                reason = syn.root_cause or "verified as already satisfied on repository baseline"
+                outcome.limitations.append(f"Requirement {req.id} ('{req.title}') is already satisfied by baseline implementation: {reason}")
+                return outcome
+
             materialize(task_dir, syn)
             manifest = syn.manifest
-            self._write_synthesis_evidence(evidence_dir, syn)
 
             stage = "environment"
             env_builder.build(task_dir=task_dir, repo=cfg.repository, tree=tree, profile=profile,
@@ -256,6 +285,13 @@ class Pipeline:
                 outcome.attempts = attempts
                 if report.ok:
                     outcome.status = CASE_READY
+                elif report.already_satisfied or syn.already_satisfied:
+                    log.info("[%s] requirement verified as already satisfied on baseline repository", req.id)
+                    outcome.status = CASE_PRUNED
+                    outcome.error = None
+                    reason = syn.root_cause or "fail_to_pass test passed on original baseline repository (no defect)"
+                    outcome.limitations.append(f"Requirement {req.id} ('{req.title}') is already satisfied by baseline implementation: {reason}")
+                    return outcome
                 else:
                     outcome.error = "convergence failed: " + " | ".join(p[:300] for p in report.problems[:10])
 
@@ -271,25 +307,48 @@ class Pipeline:
             outcome.failed_stage = stage
             log.error("[%s] %s", req.id, outcome.error)
         finally:
-            if outcome.status != CASE_READY:
-                outcome.failed_stage = outcome.failed_stage or stage
-            self.llm.tracker.write(evidence_dir / "llm_usage.json", start=calls_before)
-            if engine is not None:
-                for i, item in enumerate(engine.raw_history, 1):
-                    write_json(evidence_dir / "llm_responses" / f"{i:02d}_{item['purpose']}.json", item["data"])
-            write_json(evidence_dir / "summary.json", {
-                "status": outcome.status, "attempts": outcome.attempts,
-                "runs": report.runs if report else [],
-                "isolated": report.isolated if report else {},
-                "problems": report.problems if report else ([outcome.error] if outcome.error else []),
-            })
-            write_result(case_dir, config=cfg, case_id=case_id, status="ready" if outcome.status == CASE_READY else "failed",
-                         error=outcome.error, limitations=outcome.limitations, attempts=outcome.attempts,
-                         snapshot_sha256=snapshot,
-                         extra={"case_status": outcome.status, "requirement_id": req.id, "requirement": req.title,
-                                "failed_stage": outcome.failed_stage,
-                                "llm": {k: v for k, v in self.llm.tracker.summary(start=calls_before).items() if k != "calls"}
-                                | {"details": "evidence/llm_usage.json"}})
+            if outcome.status == CASE_PRUNED:
+                outcome.failed_stage = None
+                outcome.error = None
+                self.llm.tracker.write(evidence_dir / "llm_usage.json", start=calls_before)
+                if engine is not None:
+                    for i, item in enumerate(engine.raw_history, 1):
+                        write_json(evidence_dir / "llm_responses" / f"{i:02d}_{item['purpose']}.json", item["data"])
+                write_json(evidence_dir / "summary.json", {
+                    "status": outcome.status, "attempts": outcome.attempts,
+                    "runs": report.runs if report else [],
+                    "isolated": report.isolated if report else {},
+                    "problems": report.problems if report else [],
+                })
+                pruned_evidence = self.evidence_dir / "pruned" / req.id
+                pruned_evidence.mkdir(parents=True, exist_ok=True)
+                if evidence_dir.exists():
+                    for item in evidence_dir.iterdir():
+                        if item.is_file():
+                            shutil.copy2(item, pruned_evidence / item.name)
+                        elif item.is_dir():
+                            shutil.copytree(item, pruned_evidence / item.name, dirs_exist_ok=True)
+                shutil.rmtree(case_dir, ignore_errors=True)
+            else:
+                if outcome.status != CASE_READY:
+                    outcome.failed_stage = outcome.failed_stage or stage
+                self.llm.tracker.write(evidence_dir / "llm_usage.json", start=calls_before)
+                if engine is not None:
+                    for i, item in enumerate(engine.raw_history, 1):
+                        write_json(evidence_dir / "llm_responses" / f"{i:02d}_{item['purpose']}.json", item["data"])
+                write_json(evidence_dir / "summary.json", {
+                    "status": outcome.status, "attempts": outcome.attempts,
+                    "runs": report.runs if report else [],
+                    "isolated": report.isolated if report else {},
+                    "problems": report.problems if report else ([outcome.error] if outcome.error else []),
+                })
+                write_result(case_dir, config=cfg, case_id=case_id, status="ready" if outcome.status == CASE_READY else "failed",
+                             error=outcome.error, limitations=outcome.limitations, attempts=outcome.attempts,
+                             snapshot_sha256=snapshot,
+                             extra={"case_status": outcome.status, "requirement_id": req.id, "requirement": req.title,
+                                    "failed_stage": outcome.failed_stage,
+                                    "llm": {k: v for k, v in self.llm.tracker.summary(start=calls_before).items() if k != "calls"}
+                                    | {"details": "evidence/llm_usage.json"}})
         return outcome
 
     @staticmethod
@@ -366,6 +425,10 @@ class Pipeline:
                 log.warning("healing produced an invalid bundle: %s", exc)
                 heal_rejection = str(exc)[:2000]
                 continue
+            if healed.already_satisfied:
+                syn = healed
+                report.already_satisfied = True
+                break
             if healed.edits != syn.edits and not solution_change_justified(report):
                 # guard against "fixing" a wrong test by bending the reference solution
                 heal_rejection = ("the edits were modified although every failure was on the BASE run "

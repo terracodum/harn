@@ -119,31 +119,37 @@ def write_run_result(output_dir: Path, *, config: CaseConfig, status: str, error
                      limitations: list[str], snapshot_sha256: str, cases: list[dict[str, Any]],
                      extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """result.json of the whole run: the protocol fields (task_path is null - the cases live under
-    cases/<R>/ with a result.json each) plus the list of cases with their status (ready | case_failed).
-    The run is ready only when every case is ready; failed cases are always listed."""
+    cases/<R>/ with a result.json each) plus the list of cases with their status (ready | case_failed | pruned).
+    The run is ready when active cases are ready and verified; pruned requirements are documented in limitations."""
     if status not in ("ready", "failed"):
         raise ValueError(f"result status must be ready or failed, got {status!r}")
     lims = list(limitations)
     for c in cases:
-        if c["status"] != "ready":
+        if c.get("status") == "pruned":
+            line = f"case {c['requirement_id']} ({c['title']}) is pruned: already satisfied on repository baseline"
+            if line not in lims:
+                lims.append(line)
+        elif c.get("status") != "ready":
             line = f"case {c['requirement_id']} ({c['title']}) is case_failed: {c.get('error') or 'not verified'}"
             if line not in lims:
                 lims.append(line)
     if error and error not in lims:
         lims.append(error)
+    has_active_cases = any(c.get("status") != "pruned" for c in cases)
     result = {
         "protocol_version": config.protocol_version,
         "case_id": config.case_id,
         "status": status,
         "task_path": None,
         "evidence_path": "evidence" if (output_dir / "evidence").is_dir() else None,
-        "cases_path": "cases" if cases else None,
+        "cases_path": "cases" if (cases and has_active_cases) else None,
         "limitations": lims,
         "input_snapshot_sha256": snapshot_sha256 or None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "cases": cases,
-        "cases_ready": sum(1 for c in cases if c["status"] == "ready"),
-        "cases_failed": sum(1 for c in cases if c["status"] != "ready"),
+        "cases_ready": sum(1 for c in cases if c.get("status") == "ready"),
+        "cases_pruned": sum(1 for c in cases if c.get("status") == "pruned"),
+        "cases_failed": sum(1 for c in cases if c.get("status") not in ("ready", "pruned")),
         "attempts": sum(int(c.get("attempts") or 0) for c in cases),
         "error": error,
         **(extra or {}),
