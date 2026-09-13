@@ -144,7 +144,7 @@ Rules:
    Each requirement of kind 'bug', 'feature', or 'change' becomes its OWN independent benchmark case
    for an AI developer to solve (with its own instruction.md, solve.sh, and test suite).
 
-   CRITICAL PRINCIPLE: Separation of Target Code Defect vs. Test Verification Steps.
+   CRITICAL PRINCIPLE 1: Separation of Target Code Defect vs. Test Verification Steps.
    - Requirements R1..Rn must strictly describe TARGET CODE DEFECTS or BUSINESS LOGIC in the
      application codebase (e.g., calculation formulas, data transformation rules, state transitions,
      boundary conditions, validation logic, error handling).
@@ -158,24 +158,52 @@ Rules:
      requirements list itself!
    - If the brief describes a bug as a discrepancy between actual and expected behavior, the REQUIREMENT
      is the correct application behavior, NOT the act of comparing them in a test!
+
+   CRITICAL PRINCIPLE 2: Decomposition of Multi-Faceted / Umbrella Briefs into Orthogonal Requirements.
+   - Task briefs often begin with a generic umbrella goal or ticket title (e.g., "Fix discrepancy between X and Y",
+     "Harmonize service A with service B", "Fix component calculation"), followed by multiple distinct, orthogonal
+     business rules or defects.
+   - NEVER collapse the entire brief into a single monolithic requirement named after the umbrella ticket title!
+   - You MUST decompose each genuinely distinct, orthogonal functional defect into its OWN independent requirement (R1, R2, ...):
+       * Arithmetic / Aggregation defect (e.g., formulas, net amounts, sign handling for debits/credits/refunds vs purchases).
+       * Temporal / Boundary defect (e.g., calendar day intervals `[00:00, 00:00 next day)`, timezone conversions, cutoff boundaries).
+   - Orthogonality Test: If Defect A (e.g., arithmetic netting formula) and Defect B (e.g., timezone date cutoff) address
+     different logical concerns and can be tested with separate test inputs, they MUST be separate requirements R1 and R2!
+
+   CRITICAL PRINCIPLE 3: Strict Demarcation of Bugs vs. Invariants vs. Calculation Filters.
+   - Calculation status filters belong to the calculation requirement: rules like "only settled transactions are counted"
+     or "pending/void do not participate" are the filtering criteria of the arithmetic requirement (R1), NOT separate bugs!
+   - Background safety properties and guarantees are INVARIANTS, NEVER BUGS:
+       * Rules asserting data isolation (e.g., "tenants/merchants/currencies are isolated"),
+       * Rules asserting idempotency (e.g., "re-closing replaces the date's result without altering adjacent dates"),
+       * Rules asserting unimpacted functionality (e.g., "legacy exports remain unchanged"),
+       are background invariants that already work in the baseline code. If included as requirements, their kind MUST be
+       'invariant' (NEVER 'bug')!
+       * Marking an already-working invariant as 'bug' is a critical error: it breaks the benchmark because no failing
+         test (fail_to_pass) can be written for code that already works.
+   - Only real defects/discrepancies described in the brief have kind='bug'. For example, if the brief describes
+     a calculation sign discrepancy and a timezone cutoff discrepancy, there are EXACTLY 2 bugs (R1 and R2), while
+     isolation and idempotency are invariants.
+
    - statement = the behavior that must hold in the application AFTER the change.
    - acceptance_criteria = concrete domain checks (inputs -> expected outputs).
    - kind:
-       * bug: any defect, calculation discrepancy, wrong sign, wrong boundary, or incorrect behavior
+       * bug: an active defect, calculation discrepancy, wrong sign, wrong boundary, or incorrect behavior
          in the codebase described or implied by the brief. The solver will need to write code to fix it.
        * feature: new functionality that does not exist in the codebase yet.
        * change: behavior that exists today but must be changed to follow a new rule.
-       * invariant: existing functionality or rules that ALREADY WORK and must KEEP WORKING (e.g.,
-         legacy calculations, unimpacted states, data isolation preserved). Invariants get regression tests (pass_to_pass).
+       * invariant: existing functionality, background invariants, or isolation guarantees that ALREADY WORK
+         and must KEEP WORKING (e.g., tenant/currency isolation, idempotency on re-runs, legacy exports).
+         Invariants get regression tests (pass_to_pass) and do NOT become separate benchmark cases.
        * performance, refactor: non-functional changes.
    - Directives in the brief like "prepare a benchmark case", "do not fix repository now" are instructions to the
      harness itself. The solver's goal IS to fix the code defect. NEVER mark "fixing the defect"
      as out_of_scope!
-   - Keep the list concise: focus on the 1-3 distinct business tasks/defects to be solved. Do not split
-     one defect into multiple pseudo-steps.
+   - Do not split a single atomic defect into sequential pipeline pseudo-steps (e.g. do not make "parse input",
+     "calculate", "format" separate requirements). But DO separate genuinely orthogonal business rules/defects.
    - testable=false only for items that cannot be asserted by a unit/integration test.
 2. constraints: architectural rules that must NOT change (public interfaces, DTOs, schemas, legacy
-   modules, tenant isolation) - these become anti-cheat invariants.
+   modules) - these become anti-cheat invariants.
 3. out_of_scope: parts the brief explicitly excludes from the task (e.g. "nightly SQL batch calculation").
 4. entities / search_queries / candidate_files: identifiers, domain terms, and likely file paths
    (from the tree) to locate the code. Queries in the language of the code (English identifiers).
