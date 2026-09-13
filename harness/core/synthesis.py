@@ -127,8 +127,17 @@ Rules:
    (mandatory, whatever the language of the brief or the code): business context, the required
    behaviour of the target requirement, input/output contracts, constraints ("do not change public
    interfaces"), how to run existing tests. Do not ask the solver to implement the other cases'
-   requirements. STRICTLY NO spoilers: do not name the defect location or the fix, do not mention
-   solve.sh, hidden tests, test file names or the categories.
+   requirements.
+   STRICTLY NO spoilers or solution spoon-feeding:
+   - NEVER quote exact buggy implementation code lines or exact diff replacements (e.g. do NOT say
+     "change <= to < in file X", do NOT quote code snippets like `e.occurred_at <= v_end`).
+   - NEVER tell the solver the exact internal file path or function to edit (e.g. do NOT say
+     "edit only sql/061_refresh_daily_settlement.sql") unless the brief explicitly specifies that exact file
+     as part of an external interface contract.
+   - Formulate the problem strictly at the level of domain behavior and acceptance criteria (e.g.
+     "Events occurring exactly at 00:00 of the next date must be excluded from the daily close calculation").
+     The solver must investigate the repository, locate the defect, and determine the fix themselves!
+   - Do NOT mention solve.sh, hidden tests, test file names or the categories (fail_to_pass, etc.).
 4. coverage: EVERY testable requirement of <task_spec> must be covered and reported in `coverage`:
    the target by at least one fail_to_pass test, every invariant by pass_to_pass tests only;
    constraints -> anti_cheat. If already_satisfied is true, coverage and fail_to_pass may be empty [].

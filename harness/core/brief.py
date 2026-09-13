@@ -124,9 +124,9 @@ BRIEF_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": list(REQUIREMENT_KINDS),
                         "description": (
-                            "Requirement kind. Use 'bug' for defects/discrepancies that may require code fixes. "
-                            "Use 'invariant' for established invariants that already work. "
-                            "When in doubt whether a rule is already satisfied, label it as 'bug' so the harness verifies it."
+                            "Requirement kind. Use 'bug' only for active defects, calculation discrepancies, or rules described as broken. "
+                            "Use 'invariant' for properties, idempotency guarantees, or isolation rules that must be preserved. "
+                            "Do NOT mark non-regression invariants or overarching summary goals as bugs."
                         ),
                     },
                     "testable": {"type": "boolean"},
@@ -201,16 +201,26 @@ Rules:
        * For calculation/formula defects: explicit expected outputs with mixed/opposing operands (e.g. additive vs subtractive operations).
        * For state/idempotency defects: explicit assertion on state after repeated or concurrent execution.
 
+   CRITICAL PRINCIPLE 4: No Duplicate Umbrella Cases and Proper Invariant Classification.
+   - Umbrella Goal vs Constituent Defects: The brief's top-level summary or goal (e.g. "Eliminate discrepancies between preview and SQL materialization", "Fix order calculation") belongs in `summary`.
+     NEVER create a separate requirement R_i for this overarching summary if the specific constituent defects (e.g. interval boundary, arithmetic signs) are already decomposed into requirements!
+     Doing so creates redundant duplicate cases that attempt to solve the same underlying bug twice.
+   - Non-Regression Guarantees vs Active Defects: Statements describing properties to PRESERVE or MAINTAIN
+     (e.g. "Tenant, merchant, currency isolation must be preserved", "Repeat closing replaces the same date without changing neighbors", "SQL scripts must remain compatible with PostgreSQL 16")
+     MUST be classified as kind: "invariant" (or placed in `constraints`), NOT kind: "bug"!
+     Only mark an item as kind: "bug" if the brief explicitly states that this specific property is currently broken in the codebase.
+   - One Requirement Per Distinct Defect: Each requirement of kind 'bug' must represent a single, distinct root-cause defect or behavioral gap. Never create both a "symptom" requirement and a "cause" requirement for the same defect.
+
    - statement = the behavior that must hold in the application AFTER the change.
    - acceptance_criteria = concrete domain checks (inputs -> expected outputs).
    - kind:
-       * bug: an active defect, calculation discrepancy, wrong sign, wrong boundary, or incorrect behavior
-         in the codebase described or implied by the brief. The solver will need to write code to fix it.
+       * bug: an active defect, calculation discrepancy, wrong sign, wrong boundary, or broken behavior
+         in the codebase described by the brief. The solver will need to write code to fix it.
        * feature: new functionality that does not exist in the codebase yet.
        * change: behavior that exists today but must be changed to follow a new rule.
-       * invariant: existing functionality, background invariants, or isolation guarantees that ALREADY WORK
-         and must KEEP WORKING (e.g., tenant/currency isolation, idempotency on re-runs, legacy exports).
-         Invariants get regression tests (pass_to_pass) and do NOT become separate benchmark cases.
+       * invariant: existing functionality, background invariants, idempotency guarantees, or isolation rules
+         that ALREADY WORK and must KEEP WORKING. Invariants get regression tests (pass_to_pass) and do NOT
+         become separate benchmark cases.
        * performance, refactor: non-functional changes.
    - Directives in the brief like "prepare a benchmark case", "do not fix repository now" are instructions to the
      harness itself. The solver's goal IS to fix the code defect. NEVER mark "fixing the defect"
