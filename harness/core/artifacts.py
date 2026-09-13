@@ -45,13 +45,13 @@ def toml_dumps(data: dict[str, Any]) -> str:
 
 
 def write_task_toml(task_dir: Path, config: CaseConfig, manifest: dict[str, list[str]], *,
-                    description: str, bank_domain: str) -> None:
+                    description: str, bank_domain: str, name: str | None = None) -> None:
     """PROTOCOL.md section 4: schema_version, [task], [metadata] (with the three test lists),
-    [agent], [verifier], [environment]."""
+    [agent], [verifier], [environment]. `name` defaults to the input case_id."""
     doc: dict[str, Any] = {
         "schema_version": "1.1",
         "task": {
-            "name": config.case_id,
+            "name": name or config.case_id,
             "description": description,
             "authors": [config.author.to_dict()],
         },
@@ -87,10 +87,10 @@ def write_json(path: Path, data: Any) -> None:
 
 def write_result(output_dir: Path, *, config: CaseConfig, status: str, error: str | None,
                  limitations: list[str], attempts: int, snapshot_sha256: str,
-                 extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """PROTOCOL.md section 2. `status` is ready or failed; a run that did not verify the case is
-    failed, with the reason in `limitations`. Extra harness fields (error, attempts, failed_stage,
-    llm) are additive."""
+                 case_id: str | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """result.json of ONE case (PROTOCOL.md section 2). `status` is ready or failed; a case that was
+    not verified is failed, with the reason in `limitations`. Extra harness fields (error, attempts,
+    failed_stage, llm, case_status) are additive."""
     if status not in ("ready", "failed"):
         raise ValueError(f"result status must be ready or failed, got {status!r}")
     task_ok = (output_dir / "task" / "task.toml").exists()
@@ -100,7 +100,7 @@ def write_result(output_dir: Path, *, config: CaseConfig, status: str, error: st
         lims.append(error)
     result = {
         "protocol_version": config.protocol_version,
-        "case_id": config.case_id,
+        "case_id": case_id or config.case_id,
         "status": status,
         "task_path": "task" if task_ok else None,
         "evidence_path": "evidence" if evidence_ok else None,
@@ -108,6 +108,43 @@ def write_result(output_dir: Path, *, config: CaseConfig, status: str, error: st
         "input_snapshot_sha256": snapshot_sha256 or None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "attempts": attempts,
+        "error": error,
+        **(extra or {}),
+    }
+    write_json(output_dir / "result.json", result)
+    return result
+
+
+def write_run_result(output_dir: Path, *, config: CaseConfig, status: str, error: str | None,
+                     limitations: list[str], snapshot_sha256: str, cases: list[dict[str, Any]],
+                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """result.json of the whole run: the protocol fields (task_path is null - the cases live under
+    cases/<R>/ with a result.json each) plus the list of cases with their status (ready | case_failed).
+    The run is ready only when every case is ready; failed cases are always listed."""
+    if status not in ("ready", "failed"):
+        raise ValueError(f"result status must be ready or failed, got {status!r}")
+    lims = list(limitations)
+    for c in cases:
+        if c["status"] != "ready":
+            line = f"case {c['requirement_id']} ({c['title']}) is case_failed: {c.get('error') or 'not verified'}"
+            if line not in lims:
+                lims.append(line)
+    if error and error not in lims:
+        lims.append(error)
+    result = {
+        "protocol_version": config.protocol_version,
+        "case_id": config.case_id,
+        "status": status,
+        "task_path": None,
+        "evidence_path": "evidence" if (output_dir / "evidence").is_dir() else None,
+        "cases_path": "cases" if cases else None,
+        "limitations": lims,
+        "input_snapshot_sha256": snapshot_sha256 or None,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "cases": cases,
+        "cases_ready": sum(1 for c in cases if c["status"] == "ready"),
+        "cases_failed": sum(1 for c in cases if c["status"] != "ready"),
+        "attempts": sum(int(c.get("attempts") or 0) for c in cases),
         "error": error,
         **(extra or {}),
     }

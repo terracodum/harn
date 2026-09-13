@@ -11,9 +11,10 @@ def test_parse_demo_bundle(mock_responses):
     syn = parse_synthesis(mock_responses["synthesize"])
     assert "tests/test_netting_refunds.py" in syn.test_files
     assert len(syn.manifest["fail_to_pass"]) == 3
-    assert syn.solution.order == ["R1"]
+    assert syn.solution.order == ["R1"] and syn.target == "R1"
     assert syn.solve_sh.startswith("#!/bin/sh")
-    assert syn.to_dict()["solve_steps"][0]["requirement_id"] == "R1"
+    assert syn.to_dict()["edits"][0]["op"] == "replace"
+    assert parse_synthesis(mock_responses["synthesize"], target="R4").target == "R4"
 
 
 def test_uncategorised_test_rejected(mock_responses):
@@ -63,19 +64,20 @@ def test_bad_test_path_rejected(mock_responses):
         parse_synthesis(data)
 
 
-def test_solve_steps_must_match_the_spec(mock_responses):
-    spec = parse_brief_spec(mock_responses["analyze_brief"])      # R1 bug, R2 invariant
+def test_case_bundle_must_cover_target_and_invariants(mock_responses):
+    spec = parse_brief_spec(mock_responses["analyze_brief"]).case_spec("R1")      # R1 bug (target), R2 invariant
     data = copy.deepcopy(mock_responses["synthesize"])
-    parse_synthesis(data, spec)
-    data["solve_steps"].append({"requirement_id": "R2", "edits": [{"op": "create", "path": "x.py", "content": "1"}]})
-    with pytest.raises(SynthesisError, match="R2 is invariant and must not have a step"):
+    syn = parse_synthesis(data, spec)
+    assert syn.target == "R1"
+    data["coverage"] = [c for c in data["coverage"] if c["requirement_id"] != "R2"]
+    with pytest.raises(SynthesisError, match="requirement R2 .* has no tests"):
         parse_synthesis(data, spec)
-    data["solve_steps"] = [{"requirement_id": "R7", "edits": [{"op": "create", "path": "x.py", "content": "1"}]}]
-    with pytest.raises(SynthesisError) as exc:
+    data = copy.deepcopy(mock_responses["synthesize"])
+    data["edits"] = []
+    with pytest.raises(SynthesisError, match="edits must be a non-empty list"):
         parse_synthesis(data, spec)
-    assert "R1 (bug) has no step" in str(exc.value) and "unknown requirement R7" in str(exc.value)
-    data["solve_steps"] = []
-    with pytest.raises(SynthesisError, match="solve_steps is empty"):
+    data["edits"] = [{"op": "replace", "path": "ledger/netting.py", "old": "a", "new": "a"}]
+    with pytest.raises(SynthesisError, match="identical"):
         parse_synthesis(data, spec)
 
 
@@ -84,7 +86,7 @@ def test_edits_are_checked_against_the_repository(mock_responses, demo_repo_copy
     read = lambda rel: read_text(demo_repo_copy / rel)  # noqa: E731
     data = copy.deepcopy(mock_responses["synthesize"])
     parse_synthesis(data, read_file=read)
-    data["solve_steps"][0]["edits"][0]["old"] = "total += tx.amount  # not what the file says"
+    data["edits"][0]["old"] = "total += tx.amount  # not what the file says"
     with pytest.raises(SynthesisError, match="not found in the file as left by the previous steps"):
         parse_synthesis(data, read_file=read)
     parse_synthesis(data)                 # without a reader only the structure is validated
@@ -103,20 +105,3 @@ def test_materialize_writes_step_chain(tmp_path, mock_responses):
     manifest = json.loads((task / "tests" / "manifest.json").read_text())
     assert set(manifest) == {"fail_to_pass", "pass_to_pass", "anti_cheat"}
     assert (task / "instruction.md").read_text(encoding="utf-8").startswith("# ")
-
-
-def test_prune_requirement_removes_step_tests_and_orphan_files(mock_responses):
-    data = copy.deepcopy(mock_responses["synthesize"])
-    data["solve_steps"].append({"requirement_id": "R3", "edits": [{"op": "create", "path": "ledger/r3.py", "content": "X = 1\n"}]})
-    data["test_files"].append({"path": "tests/test_r3.py", "content": "def test_r3():\n    assert 1\n"})
-    data["fail_to_pass"].append("tests/test_r3.py::test_r3")
-    data["coverage"].append({"requirement_id": "R3", "tests": ["tests/test_r3.py::test_r3",
-                                                                "tests/test_netting_refunds.py::test_unsettled_operations_are_ignored"]})
-    syn = parse_synthesis(data)
-    removed = syn.prune_requirement("R3", "never converged")
-    assert removed == ["tests/test_r3.py::test_r3"]          # the shared test stays: R2 still uses it
-    assert syn.solution.order == ["R1"] and syn.solution.pruned == {"R3": "never converged"}
-    assert "tests/test_r3.py" not in syn.test_files
-    assert "tests/test_r3.py::test_r3" not in syn.manifest["fail_to_pass"]
-    assert "tests/test_netting_refunds.py::test_unsettled_operations_are_ignored" in syn.manifest["pass_to_pass"]
-    assert {c["requirement_id"] for c in syn.coverage} == {"R1", "R2"}

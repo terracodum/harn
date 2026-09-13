@@ -64,7 +64,7 @@ JSON ответ запрашивается в самом строгом режи
 # полный прогон с верификацией в Docker
 python -m harness run examples/demo/input.json --base-url http://localhost:11434/v1 --model gpt-oss:120b
 
-# то же, но только сборка артефактов без Docker (result.json: status = "failed", в limitations — "not verified")
+# то же, но только сборка артефактов без Docker (каждый кейс case_failed с пометкой "NOT verified", без error)
 python -m harness run examples/demo/input.json --skip-docker
 
 # оффлайн-демо на mock-ответах LLM (без сервера, без ключей)
@@ -122,76 +122,64 @@ python -m harness snapshot examples/demo_repo
 останавливает прогон; эвристический разбор (весь бриф как одно требование) существует только в
 явном режиме `inspect --no-llm`.
 
-## Цепочка решения `solve_R<i>.sh`
+## Один кейс на требование
 
-Модель не пишет shell: каждый шаг решения — список структурных правок
-`{"op": "replace"|"create"|"delete", "path", "old", "new", "content"}`, ровно один шаг на требование
-типа `bug/feature/change`. Из них харнесс сам:
+Каждое требование типа `bug/feature/change` из спецификации становится **отдельным бенчмарк-кейсом**
+`cases/R<i>/` со своими `task/`, `evidence/` и `result.json` по PROTOCOL.md. Кейсы независимы:
+каждый строится на исходном репозитории, эталон чинит только своё требование, инварианты брифа
+входят в каждый кейс как `pass_to_pass`, ограничения — как `anti_cheat`. Соседние требования
+передаются модели как `<other_cases>`: их нельзя ни чинить, ни тестировать, ни описывать в
+`instruction.md` как задачу.
 
-- применяет правки R1..Ri-1 в памяти и показывает модели в раунде лечения файлы в состоянии перед
-  шагом, который надо чинить (`<repository_state after="R1,R2">`);
-- отклоняет бандл до Docker, если `old` не встречается ровно один раз в состоянии после предыдущих
-  шагов, файл для `create` уже существует, путь ведёт за пределы репозитория или в `tests/`;
-- знает, какие поздние шаги перестанут применяться при отсечении раннего, и отсекает их вместе;
-- рендерит скрипты детерминированно:
+Кейс, для которого не удалось получить валидный бандл (валидатор отклонил после repair-раундов,
+сбой LLM) или который не сошёлся за `limits.max_retries` раундов лечения, помечается
+`case_failed`: его папка с evidence и `result.json` (`status: "failed"`, `case_status:
+"case_failed"`, `error`, `failed_stage`) остаётся, а общий `result.json` всегда перечисляет его в
+`cases` и `limitations`. Остальные кейсы продолжают строиться. Общий статус прогона `ready`
+только когда все кейсы `ready`.
 
-```
-task/solution/
-├── solve.sh        # самодостаточный: все шаги инлайном, перед каждым печатает "[solve] step R<i>"
-├── solve_R1.sh     # тот же шаг R1 отдельно (доп. файл решения, нужен ступенчатой диагностике)
-└── solve_R3.sh     # шаг R3 отдельно (R2 — инвариант, шага нет)
-```
+### Эталонное решение
 
-Зачем цепочка: при лечении R3 модель не может «забыть» R1 и R2. Требования, которые уже сошлись (все их
-тесты ведут себя правильно на Base и Oracle), замораживаются: их шаги передаются в промпт как
-`<frozen>`, а бандл, который их изменил или перекатегоризировал их тесты, отклоняется до песочницы.
-Проблемы группируются по требованиям (`<focus>`), а при падении Oracle на цепочке из нескольких
-шагов харнесс прогоняет префиксы R1, R1+R2, … и сообщает модели, с какого шага начинается сбой
-(`evidence/verification.json`, поле `staged`). Если `solve.sh` завершился с ошибкой, в проблему
-попадает имя упавшего шага (`solve.sh exited with 1 in step R3`).
+Модель не пишет shell: решение кейса — список структурных правок
+`{"op": "replace"|"create"|"delete", "path", "old", "new", "content"}`. Из них харнесс:
+
+- отклоняет бандл до Docker, если `old` не встречается в файле ровно один раз, файл для `create`
+  уже существует, путь ведёт за пределы репозитория или в `tests/`;
+- рендерит самодостаточный `solution/solve.sh` (python-heredoc, `REPO_PATH`, маркер
+  `[solve] step R<i>`), а также `solve_R<i>.sh` с тем же содержимым как дополнительный файл решения.
 
 ### Защиты в контуре self-healing
 
 Харнесс ничего не переклассифицирует сам: вердикт песочницы передаётся модели как есть.
 
-- шаги решения в раунде лечения разрешено менять только при бизнес-падении `fail_to_pass` на
-  Oracle или крахе самого шага; «подгонка» решения под неверный тест отклоняется;
-- шаги и тесты сошедшихся требований заморожены (см. выше), лечение работает только по `<focus>`;
+- правки в раунде лечения разрешено менять только при бизнес-падении `fail_to_pass` на Oracle
+  или крахе `solve.sh`; «подгонка» решения под неверный тест отклоняется до песочницы;
 - `async def test_` без `pytest-asyncio`, строковые сравнения сигнатур и прочие типовые
   ошибки ловятся валидатором до Docker и уходят в repair-раунд;
 - невалидный результат лечения не перепроверяется в песочнице, а сразу лечится заново
   с вердиктом валидатора; падение `docker build` из-за сети повторяется один раз.
 
-### Отсечение несошедшихся требований (pruning)
-
-Когда попытки лечения исчерпаны, а часть требований так и не сошлась, харнесс не роняет кейс
-целиком: если каждая оставшаяся проблема привязана к конкретному требованию (через его тесты
-или упавший шаг), эти требования отсекаются — шаг `solve_R<i>.sh`, их тесты и запись `coverage`
-удаляются, `instruction.md` переписывается моделью без них (отдельный вызов
-`rewrite_instruction`, проверяется на спойлеры; его сбой роняет кейс), и бандл верифицируется
-ещё раз. Всё фиксируется явно: `evidence/pruned.json`, `pruned` в `brief_spec.json`,
-`limitations` в `result.json`. Отсечение запрещено, если после него не останется ни одного
-`bug/feature/change` требования или ни одного `fail_to_pass` теста, либо если есть проблемы,
-которые нельзя привязать к требованию (изолированные прогоны, таймауты, падающие `anti_cheat`):
-тогда `status: "failed"` с пояснением.
-
 ## Что получается на выходе
 
 ```
-out/<case_id>/
-├── task/
-│   ├── task.toml               # PROTOCOL.md §4: [task], [metadata] с тремя списками тестов, [agent], [verifier], [environment]
-│   ├── instruction.md          # ТЗ для решателя (без спойлеров)
-│   ├── solution/               # solve.sh (оркестратор) + solve_R<i>.sh по требованиям
-│   ├── tests/                  # test_*.py, manifest.json, test.sh, verify.py, pytest.ini
-│   └── environment/            # Dockerfile + чистая копия репозитория (repo/)
-├── evidence/
-│   ├── build.log, base/, oracle/, isolated/   # логи прогонов, tests.xml, reward.txt, results.json
-│   ├── attempts/NN/            # артефакты неудачных итераций self-healing (+ staged/ префиксные прогоны)
-│   ├── profile.json, localization.json, synthesis.json, verification.json, pruned.json
-│   ├── summary.json            # все запуски: длительность, exit code, статус
-│   └── llm_usage.json          # модель, токены, длительность каждого вызова
-└── result.json                 # PROTOCOL.md §2: status ready | failed, task_path, evidence_path, limitations, input_snapshot_sha256
+out/<run>/
+├── result.json                 # общий на прогон: status ready | failed, cases[], cases_ready/failed, limitations
+├── evidence/                   # общие доказательства: profile.json, brief_spec.json, summary.json, llm_usage.json
+└── cases/
+    └── R1/                     # один кейс по PROTOCOL.md на требование R1
+        ├── task/
+        │   ├── task.toml       # §4: [task] name = "<case_id>-r1", [metadata] с тремя списками тестов, [agent], [verifier], [environment]
+        │   ├── instruction.md  # ТЗ для решателя (без спойлеров), только про R1
+        │   ├── solution/       # solve.sh (+ solve_R1.sh)
+        │   ├── tests/          # test_*.py, manifest.json, test.sh, verify.py, pytest.ini
+        │   └── environment/    # Dockerfile + чистая копия исходного репозитория (repo/)
+        ├── evidence/
+        │   ├── build.log, base/, oracle/, isolated/   # логи прогонов, tests.xml, reward.txt, results.json
+        │   ├── attempts/NN/    # артефакты неудачных итераций self-healing
+        │   ├── case_spec.json, localization.json, synthesis.json, verification.json
+        │   ├── summary.json    # все запуски: команда, версия Docker, длительность, exit code, reward, путь к отчёту
+        │   └── llm_usage.json  # вызовы модели этого кейса
+        └── result.json         # §2: status ready | failed, case_status ready | case_failed, task_path, evidence_path, limitations
 ```
 
 Контракт песочницы: репозиторий в `/app/repo` (рабочая директория), тесты монтируются

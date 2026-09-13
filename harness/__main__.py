@@ -37,10 +37,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     pipeline = Pipeline(config, llm, embedder=embedder, search_backend=args.search_backend,
                         skip_docker=args.skip_docker, isolated_runs=not args.no_isolated, keep_image=args.keep_image)
     result = pipeline.run()
-    print(json.dumps({k: result[k] for k in ("status", "attempts", "error", "limitations")}, indent=2, ensure_ascii=False))
+    print(json.dumps({
+        "status": result["status"], "error": result["error"],
+        "cases": [{k: c[k] for k in ("requirement_id", "title", "status", "path", "attempts", "error")} for c in result["cases"]],
+        "limitations": result["limitations"],
+    }, indent=2, ensure_ascii=False))
     if result["status"] == "ready":
         return 0
-    return 0 if args.skip_docker and result["error"] is None else 1
+    return 0 if args.skip_docker and all(c["error"] is None for c in result["cases"]) and result["cases"] else 1
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:

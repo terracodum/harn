@@ -86,16 +86,26 @@ def test_coverage_rules_follow_the_requirement_kind():
                                                 {"requirement_id": "R9", "tests": ["tests/t.py::p"]}], MANIFEST))
 
 
-def test_spec_prune_records_the_requirement():
-    spec = BriefSpec(summary="s", requirements=[Requirement("R1", "a", "s"), Requirement("R2", "b", "s")])
-    assert spec.prune("R2", "never converged").id == "R2"
-    assert [r.id for r in spec.requirements] == ["R1"]
-    assert spec.pruned == [{"id": "R2", "title": "b", "reason": "never converged"}]
-    assert spec.prune("R9", "x") is None
+def test_case_spec_isolates_one_requirement():
+    from harness.core.brief import case_requirements
+    spec = BriefSpec(summary="s", requirements=[
+        Requirement("R1", "bug one", "s1", acceptance_criteria=["a1"], kind="bug"),
+        Requirement("R2", "keep", "s2", kind="invariant"),
+        Requirement("R3", "feature", "s3", kind="feature"),
+        Requirement("R4", "untestable", "s4", kind="bug", testable=False),
+    ], constraints=["api"], search_queries=["q"], bank_domain="dom")
+    assert [r.id for r in case_requirements(spec)] == ["R1", "R3"]
+    c = spec.case_spec("R3")
+    assert c.target == "R3" and [r.id for r in c.requirements] == ["R3", "R2"]
+    assert c.search_queries[0] == "feature. s3" and "q" in c.search_queries
+    assert any(o.startswith("R1 (bug one)") for o in c.out_of_scope) and c.constraints == ["api"]
+    assert "[TARGET of this case]" in c.render() and c.bank_domain == "dom"
+    with pytest.raises(ValueError):
+        spec.case_spec("R9")
 
 
 def test_synthesis_rejects_uncovered_requirement(mock_responses):
-    spec = parse_brief_spec(mock_responses["analyze_brief"])
+    spec = parse_brief_spec(mock_responses["analyze_brief"]).case_spec("R1")
     data = copy.deepcopy(mock_responses["synthesize"])
     assert parse_synthesis(data, spec).coverage
     data["coverage"] = [c for c in data["coverage"] if c["requirement_id"] != "R1"]

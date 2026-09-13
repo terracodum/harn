@@ -1,6 +1,9 @@
+import json
 import tomllib
 
-from harness.core.artifacts import toml_dumps, write_result, write_task_toml
+import pytest
+
+from harness.core.artifacts import toml_dumps, write_result, write_run_result, write_task_toml
 from harness.core.config import CaseConfig
 
 
@@ -52,3 +55,22 @@ def test_result_json_follows_protocol(demo_input, tmp_path):
     import pytest
     with pytest.raises(ValueError):
         write_result(out, config=cfg, status="unverified", error=None, limitations=[], attempts=0, snapshot_sha256="")
+    res = write_result(out, config=cfg, case_id="x/y-r2", status="ready", error=None, limitations=[], attempts=1,
+                       snapshot_sha256="abc")
+    assert res["case_id"] == "x/y-r2"
+
+
+def test_run_result_lists_every_case(demo_input, tmp_path):
+    cfg = CaseConfig.load(demo_input)
+    out = tmp_path / "out"
+    (out / "evidence").mkdir(parents=True)
+    cases = [{"requirement_id": "R1", "title": "a", "status": "ready", "attempts": 1, "error": None},
+             {"requirement_id": "R3", "title": "b", "status": "case_failed", "attempts": 3, "error": "convergence failed: x"}]
+    res = write_run_result(out, config=cfg, status="failed", error="1 of 2 case(s) failed", limitations=["l"],
+                           snapshot_sha256="abc", cases=cases)
+    assert res["task_path"] is None and res["cases_path"] == "cases" and res["evidence_path"] == "evidence"
+    assert res["cases_ready"] == 1 and res["cases_failed"] == 1 and res["attempts"] == 4
+    assert res["limitations"] == ["l", "case R3 (b) is case_failed: convergence failed: x", "1 of 2 case(s) failed"]
+    assert json.loads((out / "result.json").read_text(encoding="utf-8"))["cases"] == cases
+    with pytest.raises(ValueError):
+        write_run_result(out, config=cfg, status="partial", error=None, limitations=[], snapshot_sha256="", cases=[])

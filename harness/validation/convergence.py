@@ -1,8 +1,8 @@
 """Stage 5: build image, Base run, Oracle run, isolated category runs, checks.
 
 Nothing in this module re-labels tests or requirements. The verdict of the sandbox is reported
-as it is; deciding what to change is the job of the healing round (LLM) and, when a requirement
-never converges, of the pruning step in the pipeline.
+as it is; deciding what to change is the job of the healing round (LLM). A case that never
+converges is reported as case_failed by the pipeline.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from harness.core.config import Limits
-from harness.core.staged_solution import StagedSolution, failing_step_from_log
+from harness.core.staged_solution import failing_step_from_log
 from harness.providers.base import ITestRunner, RunResult
 from harness.providers.python.test_runner import CheckReport, check_run
 from harness.providers.python.verifier_template import CATEGORIES
@@ -23,14 +23,12 @@ log = logging.getLogger(__name__)
 
 _ENV_REASON = re.compile(r"async def functions are not natively supported|SyntaxError|IndentationError|"
                          r"ModuleNotFoundError|ImportError|fixture '.*' not found|No module named", re.IGNORECASE)
-_SUMMARY_LINE = re.compile(r"^(base|oracle): reward=")
-_STEP_CRASH = re.compile(r"solve\.sh exited with \S+ in step (R\d+)")
 
 
 def solution_change_justified(report: "VerificationReport") -> bool:
-    """A solve step may only be rewritten by the healing round when the ORACLE side complained for a
+    """The edits may only be rewritten by the healing round when the ORACLE side complained for a
     business reason: a fail_to_pass test fails after the solution with a real assertion (the fix is
-    incomplete) or a step itself crashed. Base-side failures and environment errors (missing
+    incomplete) or solve.sh itself crashed. Base-side failures and environment errors (missing
     plugin, syntax/import errors in a test) are test defects, never a reason to touch the solution."""
     for p in report.problems:
         if not p.startswith("oracle:"):
@@ -40,50 +38,6 @@ def solution_change_justified(report: "VerificationReport") -> bool:
         if "fail_to_pass test" in p and not _ENV_REASON.search(p):
             return True
     return False
-
-
-@dataclass
-class Attribution:
-    """Verification problems grouped by the requirement they belong to."""
-    by_requirement: dict[str, list[str]] = field(default_factory=dict)
-    unattributed: list[str] = field(default_factory=list)     # neither summary nor requirement-bound
-
-    def converged(self, requirement_ids: list[str]) -> list[str]:
-        """Requirements with no problem of their own. Only meaningful when nothing is unattributed:
-        an isolated-run or environment problem may concern any of them, so then nobody is frozen."""
-        if self.unattributed:
-            return []
-        return [r for r in requirement_ids if not self.by_requirement.get(r)]
-
-
-def attribute_problems(problems: list[str], manifest: dict[str, list[str]],
-                       coverage: list[dict]) -> Attribution:
-    """Map each problem line to the requirement(s) it concerns via the covering tests, or via the
-    crashed step. Summary lines (`base: reward=1, expected 0`) are ignored; a problem that cannot
-    be pinned to a requirement (isolated-run mismatch, timeout, missing reward, a failing test that
-    no requirement covers) is reported as unattributed."""
-    test_to_reqs: dict[str, set[str]] = {}
-    for item in coverage or []:
-        rid = str(item.get("requirement_id", ""))
-        for t in item.get("tests") or []:
-            test_to_reqs.setdefault(str(t), set()).add(rid)
-    all_ids = sorted({t for c in manifest.values() for t in c}, key=len, reverse=True)
-    out = Attribution()
-    for p in problems:
-        if _SUMMARY_LINE.match(p):
-            continue
-        m = _STEP_CRASH.search(p)
-        if m:
-            out.by_requirement.setdefault(m.group(1), []).append(p)
-            continue
-        tid = next((t for t in all_ids if t in p), None)
-        reqs = test_to_reqs.get(tid or "", set())
-        if not reqs:
-            out.unattributed.append(p)
-            continue
-        for rid in sorted(reqs):
-            out.by_requirement.setdefault(rid, []).append(p)
-    return out
 
 
 _ORACLE_CMD = ("sh /solution/solve.sh >/logs/solve.log 2>&1; echo $? >/logs/solve_exit.txt; "
@@ -108,14 +62,13 @@ class VerificationReport:
     isolated: dict[str, dict[str, dict]] = field(default_factory=dict)
     runs: list[dict] = field(default_factory=list)      # entries for evidence/summary.json
     logs: dict[str, str] = field(default_factory=dict)  # excerpts for the healing prompt
-    staged: list[dict] = field(default_factory=list)    # prefix diagnostics (see ConvergenceVerifier.locate_failing_step)
 
     def to_dict(self) -> dict:
         return {
             "ok": self.ok, "build_ok": self.build_ok, "problems": self.problems,
             "base": self.base.to_dict() if self.base else None,
             "oracle": self.oracle.to_dict() if self.oracle else None,
-            "isolated": self.isolated, "runs": self.runs, "staged": self.staged,
+            "isolated": self.isolated, "runs": self.runs,
         }
 
 
@@ -236,47 +189,3 @@ class ConvergenceVerifier:
                         report.problems.append(f"isolated {kind}/{cat}: reward={result.reward}, expected {expected}")
         report.ok = not report.problems
         return report
-
-    # ------------------------------------------------------------ staged runs
-    def locate_failing_step(self, report: VerificationReport, solution: StagedSolution,
-                            manifest: dict[str, list[str]], coverage: list[dict]) -> list[str]:
-        """Incremental diagnosis after a failed oracle run of a multi-step chain: apply the prefixes
-        R1, R1+R2, ... and run the oracle with the tests those requirements own (plus every
-        pass_to_pass / anti_cheat test). Stops at the first prefix that fails. Returns problem
-        lines for the healing prompt; the raw outcomes are stored in `report.staged`."""
-        order = solution.order
-        if len(order) < 2 or not solution_change_justified(report):
-            return []
-        test_to_reqs: dict[str, set[str]] = {}
-        for item in coverage or []:
-            for t in item.get("tests") or []:
-                test_to_reqs.setdefault(str(t), set()).add(str(item.get("requirement_id", "")))
-        notes: list[str] = []
-        for k, upto in enumerate(order[:-1], 1):
-            prefix_ids = set(order[:k])
-            sub = {
-                "fail_to_pass": [t for t in manifest["fail_to_pass"] if test_to_reqs.get(t, set()) and
-                                 test_to_reqs[t] <= prefix_ids],
-                "pass_to_pass": list(manifest["pass_to_pass"]),
-                "anti_cheat": list(manifest["anti_cheat"]),
-            }
-            staged_dir = self.evidence_dir / "staged" / upto
-            solution_dir = staged_dir / "solution"
-            solution.prefix(upto).write(solution_dir)
-            proc, result = self.run_case(f"staged/{upto}", with_solution=True, category="all",
-                                         logs_dir=staged_dir / "oracle", manifest=sub, solution_dir=solution_dir)
-            check = check_run("oracle", result, sub)
-            for note in result.notes:
-                check.problems.append(f"oracle: {note}")
-                check.ok = False
-            report.staged.append({"prefix": order[:k], "ok": check.ok, "problems": check.problems,
-                                  "reward": result.reward, "duration_sec": proc.duration_sec})
-            report.runs.append(self._run_entry(f"staged/{upto}", proc, logs_dir=staged_dir / "oracle",
-                                               reward=result.reward, status="ok" if check.ok else "failed"))
-            if not check.ok:
-                notes.append(f"staged: applying only steps {', '.join(order[:k])} the oracle run already fails: "
-                             + " | ".join(p[:300] for p in check.problems[:6]))
-                return notes
-        notes.append(f"staged: steps {', '.join(order[:-1])} converge together; the failure appears only "
-                     f"once step {order[-1]} is applied")
-        return notes

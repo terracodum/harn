@@ -28,10 +28,13 @@ def generated(demo_input, mock_responses, tmp_path):
 def test_pipeline_packages_task(generated):
     cfg, result = generated
     assert result["status"] == "failed" and result["error"] is None, result       # packaged but not verified
-    assert result["task_path"] == "task" and result["evidence_path"] == "evidence"
+    assert result["task_path"] is None and result["evidence_path"] == "evidence" and result["cases_path"] == "cases"
     assert result["protocol_version"] == "1.0" and result["case_id"] == cfg.case_id
-    assert any("NOT verified" in lim for lim in result["limitations"])
-    out = cfg.output_dir
+    assert [c["requirement_id"] for c in result["cases"]] == ["R1"]
+    case = result["cases"][0]
+    assert case["status"] == "case_failed" and case["task_path"] == "cases/R1/task"
+    assert any("NOT verified" in lim for lim in case["limitations"])
+    out = cfg.output_dir / "cases" / "R1"
     task = out / "task"
     for rel in ("task.toml", "instruction.md", "solution/solve.sh", "tests/test.sh", "tests/verify.py",
                 "tests/manifest.json", "tests/pytest.ini", "tests/test_netting_refunds.py",
@@ -42,20 +45,23 @@ def test_pipeline_packages_task(generated):
     toml = tomllib.loads((task / "task.toml").read_text(encoding="utf-8"))
     assert toml["schema_version"] == "1.1"
     assert result["input_snapshot_sha256"] == snapshot_sha256(cfg.repository)
-    assert toml["task"]["name"] == cfg.case_id and toml["task"]["authors"][0]["email"] == cfg.author.email
+    assert toml["task"]["name"] == f"{cfg.case_id}-r1" and toml["task"]["authors"][0]["email"] == cfg.author.email
     md = toml["metadata"]
     assert md["task_type"] == "agentic" and md["bank_domain"] and md["language"] == "ru"
     assert len(md["fail_to_pass"]) == 3 and len(md["anti_cheat"]) == 2
     assert set(md["fail_to_pass"]).isdisjoint(md["pass_to_pass"])
     assert toml["environment"]["allow_internet"] is False
-    usage = json.loads((out / "evidence/llm_usage.json").read_text())
+    usage = json.loads((cfg.output_dir / "evidence/llm_usage.json").read_text())
     assert usage["total_calls"] == 2
     assert {c["purpose"] for c in usage["calls"]} == {"analyze_brief", "synthesize"}
-    assert (out / "evidence/profile.json").exists() and (out / "evidence/summary.json").exists()
-    spec = json.loads((out / "evidence/brief_spec.json").read_text(encoding="utf-8"))
+    assert json.loads((out / "evidence/llm_usage.json").read_text())["total_calls"] == 1
+    assert (cfg.output_dir / "evidence/profile.json").exists() and (out / "evidence/summary.json").exists()
+    spec = json.loads((cfg.output_dir / "evidence/brief_spec.json").read_text(encoding="utf-8"))
     assert [r["id"] for r in spec["requirements"]] == ["R1", "R2"]
     synth = json.loads((out / "evidence/synthesis.json").read_text(encoding="utf-8"))
     assert {c["requirement_id"] for c in synth["coverage"]} == {"R1", "R2"}
+    case_result = json.loads((out / "result.json").read_text(encoding="utf-8"))
+    assert case_result["case_id"] == f"{cfg.case_id}-r1" and case_result["task_path"] == "task"
     dockerfile = (task / "environment/Dockerfile").read_text()
     assert "pip install -e ." in dockerfile and "postgresql" not in dockerfile
     assert b"\r\n" not in (task / "tests/test.sh").read_bytes()
@@ -75,7 +81,7 @@ def _run_verify(task: Path, repo: Path, logs: Path, category: str = "all") -> di
 
 def test_verifier_base_and_oracle_on_host(generated, tmp_path):
     cfg, _ = generated
-    task = cfg.output_dir / "task"
+    task = cfg.output_dir / "cases" / "R1" / "task"
     manifest = json.loads((task / "tests/manifest.json").read_text())
 
     # Base run: original code

@@ -63,15 +63,18 @@ def test_brief_analysis_failure_stops_the_pipeline(demo_input, mock_responses):
     assert result["status"] == "failed"
     assert result["failed_stage"] == "2a-brief-analysis"
     assert "brief analysis failed" in result["error"] and "mock has no response" in result["error"]
-    assert not (cfg.output_dir / "task" / "solution").exists()
+    assert result["cases"] == [] and not (cfg.output_dir / "cases").exists()
 
 
 def test_synthesis_failure_stops_the_pipeline(demo_input, mock_responses):
     cfg = CaseConfig.load(demo_input)
     llm = MockLLMClient({k: v for k, v in mock_responses.items() if k != "synthesize"})
     result = Pipeline(cfg, llm, search_backend="keyword", skip_docker=True).run()
-    assert result["status"] == "failed" and result["failed_stage"] == "3-synthesis"
-    assert result["error"].startswith("LLM step failed")
+    assert result["status"] == "failed"
+    case = result["cases"][0]
+    assert case["status"] == "case_failed" and case["failed_stage"] == "synthesis"
+    assert case["error"].startswith("LLM step failed (synthesis)") and "mock has no response" in case["error"]
+    assert any("case R1" in lim and "LLM step failed" in lim for lim in result["limitations"])
 
 
 def test_analyze_brief_never_degrades():

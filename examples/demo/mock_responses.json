@@ -73,17 +73,12 @@
   },
   "synthesize": {
     "root_cause": "In ledger/netting.py net_balance() adds tx.amount for refunds instead of subtracting it, so settled refunds inflate the daily-close balance.",
-    "solve_steps": [
+    "edits": [
       {
-        "requirement_id": "R1",
-        "edits": [
-          {
-            "op": "replace",
-            "path": "ledger/netting.py",
-            "old": "        if tx.kind == \"refund\":\n            total += tx.amount\n",
-            "new": "        if tx.kind == \"refund\":\n            total -= tx.amount\n"
-          }
-        ]
+        "op": "replace",
+        "path": "ledger/netting.py",
+        "old": "        if tx.kind == \"refund\":\n            total += tx.amount\n",
+        "new": "        if tx.kind == \"refund\":\n            total -= tx.amount\n"
       }
     ],
     "instruction_md": "# Корректный учёт возвратов при суточном закрытии\n\n## Контекст\nМодуль `ledger` считает нетто-баланс на момент суточного закрытия. Операция `Transaction` имеет вид `payment` или `refund`, сумму `amount` (Decimal) и момент расчёта `settled_at`.\n\n## Проблема\nПри закрытии дня возвраты со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи учитываются верно.\n\n## Требуемое поведение\n- `net_balance(transactions, now)` возвращает сумму settled-платежей минус сумму settled-возвратов.\n- Операция считается settled, если `settled_at` задан и не позже `now` (включительно).\n- Операции без `settled_at` или с `settled_at` позже `now` в расчёт не входят.\n- Результат — `Decimal`; при отсутствии операций возвращается `Decimal(\"0\")`.\n\n## Ограничения\n- Публичные сигнатуры `net_balance` и `is_settled` не менять.\n- Модель `Transaction` (имена и порядок полей) не менять.\n- Не добавлять внешние зависимости.\n\n## Проверка\nСуществующие тесты запускаются командой `pytest` из корня репозитория и должны проходить.\n",

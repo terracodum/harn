@@ -48,7 +48,7 @@ class BriefSpec:
     brief_language: str = "unknown"
     bank_domain: str = ""                                     # business domain for task.toml [metadata]
     source: str = "llm"                                       # llm | heuristic
-    pruned: list[dict[str, str]] = field(default_factory=list)  # [{id, title, reason}] removed by the pipeline
+    target: str | None = None                                 # set on a case spec: the requirement this case is about
 
     @property
     def testable_ids(self) -> list[str]:
@@ -57,20 +57,38 @@ class BriefSpec:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def prune(self, rid: str, reason: str) -> Requirement | None:
-        """Remove a requirement that never converged; it is recorded, not forgotten."""
-        for r in self.requirements:
-            if r.id == rid:
-                self.requirements.remove(r)
-                self.pruned.append({"id": r.id, "title": r.title, "reason": reason})
-                return r
-        return None
+    def case_spec(self, rid: str) -> "BriefSpec":
+        """The spec of ONE benchmark case: the target requirement plus every testable invariant (they
+        become pass_to_pass tests of the case); the other bug/feature/change requirements are listed
+        as out of scope. Search queries are re-centred on the target."""
+        target = next((r for r in self.requirements if r.id == rid), None)
+        if target is None:
+            raise ValueError(f"unknown requirement {rid}")
+        invariants = [r for r in self.requirements if r.kind == "invariant" and r.testable and r.id != rid]
+        others = [r for r in self.requirements if r.id != rid and r.kind in NEEDS_FAIL_TO_PASS]
+        return BriefSpec(
+            summary=target.title,
+            requirements=[target, *invariants],
+            constraints=list(self.constraints),
+            out_of_scope=[*self.out_of_scope, *(f"{r.id} ({r.title}): separate case" for r in others)],
+            entities=list(self.entities),
+            search_queries=list(dict.fromkeys([f"{target.title}. {target.statement}", *target.acceptance_criteria,
+                                               *self.search_queries])),
+            candidate_files=list(self.candidate_files),
+            assumptions=list(self.assumptions),
+            ambiguities=list(self.ambiguities),
+            brief_language=self.brief_language,
+            bank_domain=self.bank_domain,
+            source=self.source,
+            target=rid,
+        )
 
     def render(self) -> str:
         """Compact block for prompts."""
         lines = [f"summary: {self.summary}", "requirements:"]
         for r in self.requirements:
-            lines.append(f"  - {r.id} [{r.kind}{'' if r.testable else ', not testable'}] {r.title}")
+            mark = " [TARGET of this case]" if r.id == self.target else ""
+            lines.append(f"  - {r.id} [{r.kind}{'' if r.testable else ', not testable'}]{mark} {r.title}")
             lines.append(f"    statement: {r.statement}")
             for ac in r.acceptance_criteria:
                 lines.append(f"    accept: {ac}")
@@ -290,6 +308,11 @@ def coverage_problems(spec: BriefSpec, coverage: list[dict[str, Any]], manifest:
             problems.append(f"coverage: requirement {r.id} ({r.title}) is an invariant but is covered by "
                             f"fail_to_pass test(s) {', '.join(sorted(tests & f2p))}")
     return problems
+
+
+def case_requirements(spec: BriefSpec) -> list[Requirement]:
+    """Requirements that become benchmark cases: testable bug / feature / change."""
+    return [r for r in spec.requirements if r.testable and r.kind in NEEDS_FAIL_TO_PASS]
 
 
 def spec_json(spec: BriefSpec) -> str:
