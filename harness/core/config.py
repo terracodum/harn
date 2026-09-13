@@ -146,20 +146,28 @@ class LLMSettings:
     # Honour HTTP(S)_PROXY / Windows system proxy for LLM traffic. Off by default: a system
     # proxy silently swallows requests to a local Ollama/vLLM and answers 503.
     trust_env: bool = False
+    seed: int | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None, *, overrides: dict[str, Any] | None = None) -> "LLMSettings":
         raw = dict(raw or {})
+        seed_env = os.environ.get("LLM_SEED")
         env_defaults = {
             "model": os.environ.get("LLM_MODEL"),
             "base_url": os.environ.get("LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
             "embedding_model": os.environ.get("LLM_EMBED_MODEL"),
             "embedding_base_url": os.environ.get("LLM_EMBED_BASE_URL"),
             "trust_env": os.environ.get("LLM_TRUST_ENV", "").lower() in ("1", "true", "yes") or None,
+            "seed": int(seed_env) if seed_env and seed_env.isdigit() else None,
         }
-        merged: dict[str, Any] = {k: v for k, v in env_defaults.items() if v}
+        merged: dict[str, Any] = {k: v for k, v in env_defaults.items() if v is not None}
         merged.update({k: v for k, v in raw.items() if v is not None})
         merged.update({k: v for k, v in (overrides or {}).items() if v is not None})
+        if "seed" in merged and merged["seed"] is not None:
+            try:
+                merged["seed"] = int(merged["seed"])
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f"llm.seed must be an integer, got {merged['seed']!r}") from exc
         unknown = set(merged) - set(cls.__dataclass_fields__)
         if unknown:
             raise ConfigError(f"unknown llm settings: {', '.join(sorted(unknown))}")
@@ -266,6 +274,10 @@ class CaseConfig:
         if not all(isinstance(u, str) for u in untrusted):
             raise ConfigError("untrusted_dirs must be a list of strings")
 
+        llm_raw = dict(raw.get("llm") or {})
+        if "seed" not in llm_raw and seed is not None:
+            llm_raw["seed"] = seed
+
         return cls(
             case_id=case_id.strip(),
             brief=brief.strip(),
@@ -279,7 +291,7 @@ class CaseConfig:
             source=str(raw.get("source", "") or ""),
             team=str(raw.get("team", "") or ""),
             limits=Limits.from_dict(raw.get("limits")),
-            llm=LLMSettings.from_dict(raw.get("llm"), overrides=llm_overrides),
+            llm=LLMSettings.from_dict(llm_raw, overrides=llm_overrides),
             untrusted_dirs=untrusted,
             raw=raw,
         )

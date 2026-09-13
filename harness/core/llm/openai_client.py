@@ -67,6 +67,8 @@ class OpenAICompatClient(BaseLLMClient):
             temperature=self.settings.temperature,
             max_tokens=max_tokens,
         )
+        if self.settings.seed is not None:
+            kwargs["seed"] = self.settings.seed
         fmt = self._response_format(mode, purpose, schema)
         if fmt:
             kwargs["response_format"] = fmt

@@ -93,6 +93,18 @@ def test_cli_overrides_win_over_json(demo_input):
 def test_env_fallback(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "http://gigachat-proxy:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "GigaChat-Pro")
+    monkeypatch.setenv("LLM_SEED", "999")
     s = LLMSettings.from_dict(None)
     assert s.model == "GigaChat-Pro"
     assert s.base_url == "http://gigachat-proxy:8000/v1"
+    assert s.seed == 999
+
+
+def test_llm_seed_inherited_from_case_seed(demo_input):
+    cfg = CaseConfig.load(demo_input)
+    assert cfg.seed == 1
+    assert cfg.llm.seed == 1
+
+    # Explicit override in llm block takes precedence
+    cfg2 = CaseConfig.load(demo_input, llm_overrides={"seed": 777})
+    assert cfg2.llm.seed == 777
