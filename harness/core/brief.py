@@ -141,19 +141,42 @@ tree of the repository, and you must turn it into a precise, complete task speci
 
 Rules:
 1. requirements: split the brief into atomic, independently testable requirements (R1, R2, ...).
-   One observable behaviour per item. Include edge cases the brief states or clearly implies
-   (boundaries, signs, empty inputs, statuses). statement = the behaviour that must hold AFTER the
-   change. acceptance_criteria = concrete checks (inputs -> expected outputs) a test can assert.
-   kind: bug (the brief says the CURRENT behaviour is wrong), feature (behaviour that does not exist
-   yet), change (behaviour must differ from today), invariant (behaviour that already works and must
-   keep working - the brief says "still", "as before", "remains", "stays", or merely restates how the
-   system works), performance, refactor.
-   Be strict: only what the brief explicitly reports as broken or missing is bug/feature/change.
-   Everything the brief describes as context or as "must remain" is invariant.
-   testable=false only for items that cannot be asserted by a unit/integration test.
-2. constraints: things that must NOT change (public interfaces, DTOs, schemas, tenant isolation,
-   legacy modules) - these become anti-cheat invariants.
-3. out_of_scope: parts the brief explicitly excludes or that belong to another task.
+   Each requirement of kind 'bug', 'feature', or 'change' becomes its OWN independent benchmark case
+   for an AI developer to solve (with its own instruction.md, solve.sh, and test suite).
+
+   CRITICAL PRINCIPLE: Separation of Target Code Defect vs. Test Verification Steps.
+   - Requirements R1..Rn must strictly describe TARGET CODE DEFECTS or BUSINESS LOGIC in the
+     application codebase (e.g., calculation formulas, data transformation rules, state transitions,
+     boundary conditions, validation logic, error handling).
+   - NEVER create requirements for testing actions, test pipeline steps, or test assertions!
+     FORBIDDEN as requirements (these are parts of test execution, NOT tasks to be solved):
+       * Data setup / Arrange steps (e.g., "Create mock events / test fixtures", "Seed the database")
+       * Execution / Act steps (e.g., "Invoke the service method in test", "Call query in test")
+       * Verification / Assert steps (e.g., "Compare actual and expected output", "Assert results match")
+       * Environmental / Runner checks (e.g., "Execute tests under target database / runtime version")
+     Such testing details belong to the tests that verify the business requirements, never to the
+     requirements list itself!
+   - If the brief describes a bug as a discrepancy between actual and expected behavior, the REQUIREMENT
+     is the correct application behavior, NOT the act of comparing them in a test!
+   - statement = the behavior that must hold in the application AFTER the change.
+   - acceptance_criteria = concrete domain checks (inputs -> expected outputs).
+   - kind:
+       * bug: any defect, calculation discrepancy, wrong sign, wrong boundary, or incorrect behavior
+         in the codebase described or implied by the brief. The solver will need to write code to fix it.
+       * feature: new functionality that does not exist in the codebase yet.
+       * change: behavior that exists today but must be changed to follow a new rule.
+       * invariant: existing functionality or rules that ALREADY WORK and must KEEP WORKING (e.g.,
+         legacy calculations, unimpacted states, data isolation preserved). Invariants get regression tests (pass_to_pass).
+       * performance, refactor: non-functional changes.
+   - Directives in the brief like "prepare a benchmark case", "do not fix repository now" are instructions to the
+     harness itself. The solver's goal IS to fix the code defect. NEVER mark "fixing the defect"
+     as out_of_scope!
+   - Keep the list concise: focus on the 1-3 distinct business tasks/defects to be solved. Do not split
+     one defect into multiple pseudo-steps.
+   - testable=false only for items that cannot be asserted by a unit/integration test.
+2. constraints: architectural rules that must NOT change (public interfaces, DTOs, schemas, legacy
+   modules, tenant isolation) - these become anti-cheat invariants.
+3. out_of_scope: parts the brief explicitly excludes from the task (e.g. "nightly SQL batch calculation").
 4. entities / search_queries / candidate_files: identifiers, domain terms, and likely file paths
    (from the tree) to locate the code. Queries in the language of the code (English identifiers).
 5. If the brief is vague, DO NOT stall: pick the most reasonable reading, record it in assumptions,

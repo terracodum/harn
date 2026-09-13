@@ -1,6 +1,6 @@
 {
   "protocol_version": "1.0",
-  "repository": "../../../meridian",
+  "repository": "C:\Users\krist\OneDrive\Изображения\Рабочий стол\hackaton\AI-Sber-Pmifi\hackathon-participants\meridian",
   "brief": "Компонент settlement, online-preview расчётного закрытия торговых точек (PreviewSettlementQuery + NettingPolicy). При суточном закрытии возвраты (kind=refund) со статусом settled сейчас увеличивают нетто-сумму net_amount, хотя по договору расчётного закрытия они должны её уменьшать: net_amount = сумма settled-покупок минус сумма settled-возвратов по каждой комбинации tenant/merchant/currency за рабочий день. Поля purchase_amount и refund_amount остаются положительными суммами, event_count считает только settled-события. События со статусом pending и void не участвуют в расчёте. Рабочий день определяется в Europe/Moscow независимо от зоны исходного timestamp: событие ровно в 00:00 следующего дня в текущий день не входит. Публичные интерфейсы, DTO (MerchantEventModel, SettlementModel, CloseRequestModel), tenant-изоляция и LegacySettlementExporter не изменяются. Ночной SQL-расчёт в этой задаче не трогаем.",
   "output_dir": "../../out/meridian-settlement-refunds",
   "case_id": "meridian/settlement-refunds",
@@ -24,7 +24,9 @@
   "seed": 1,
   "source": "meridian/settlement-refunds",
   "team": "team-nikita",
-  "untrusted_dirs": ["DOCS/imported"],
+  "untrusted_dirs": [
+    "DOCS/imported"
+  ],
   "llm": {
     "model": "gpt-oss:120b-cloud",
     "base_url": "http://localhost:11434/v1",
