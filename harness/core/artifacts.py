@@ -1,4 +1,4 @@
-"""Stage 6: task.toml, evidence/summary.json, result.json."""
+"""Stage 6: task.toml, evidence/summary.json, result.json (formats from PROTOCOL.md)."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from harness.core.config import CaseConfig
-from harness.providers.base import StackProfile
 
 
 def _toml_value(value: Any) -> str:
@@ -22,12 +21,14 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         if not value:
             return "[]"
+        if all(isinstance(v, dict) for v in value):
+            return "[" + ", ".join(_toml_value(v) for v in value) + "]"
         return "[\n" + "".join(f"    {_toml_value(v)},\n" for v in value) + "]"
     raise TypeError(f"unsupported TOML value: {type(value).__name__}")
 
 
 def toml_dumps(data: dict[str, Any]) -> str:
-    """Minimal TOML writer: scalars, arrays of scalars, one level of tables."""
+    """Minimal TOML writer: scalars, arrays of scalars, arrays of inline tables, one level of tables."""
     lines: list[str] = []
     tables: list[tuple[str, dict]] = []
     for key, value in data.items():
@@ -43,36 +44,38 @@ def toml_dumps(data: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_task_toml(task_dir: Path, config: CaseConfig, profile: StackProfile,
-                    manifest: dict[str, list[str]], snapshot_sha256: str) -> None:
+def write_task_toml(task_dir: Path, config: CaseConfig, manifest: dict[str, list[str]], *,
+                    description: str, bank_domain: str) -> None:
+    """PROTOCOL.md section 4: schema_version, [task], [metadata] (with the three test lists),
+    [agent], [verifier], [environment]."""
     doc: dict[str, Any] = {
         "schema_version": "1.1",
-        "protocol_version": config.protocol_version,
-        "case_id": config.case_id,
-        "source": config.source,
-        "team": config.team,
-        "difficulty": config.difficulty,
-        "language": config.language,            # language of instruction.md
-        "stack": profile.language,              # detected implementation stack
-        "authors": [config.author.to_dict()],
-        "seed": config.seed,
-        "input_snapshot_sha256": snapshot_sha256,
-        "fail_to_pass": manifest["fail_to_pass"],
-        "pass_to_pass": manifest["pass_to_pass"],
-        "anti_cheat": manifest["anti_cheat"],
-        "limits": config.limits.to_protocol_dict(),
-        "environment": {
-            "dockerfile": "environment/Dockerfile",
-            "repo": "environment/repo",
-            "workdir": "/app/repo",
-            "tests_mount": "/tests",
-            "solution_mount": "/solution",
-            "logs_mount": "/logs",
-            "test_command": "sh /tests/test.sh",
-            "reward_file": "/logs/verifier/reward.txt",
-            "network": "none",
+        "task": {
+            "name": config.case_id,
+            "description": description,
+            "authors": [config.author.to_dict()],
         },
-        "solution": {"script": "solution/solve.sh", "apply_command": "sh /solution/solve.sh"},
+        "metadata": {
+            "task_type": "agentic",
+            "bank_domain": bank_domain,
+            "language": config.language,
+            "build_tool": "docker",
+            "difficulty": config.difficulty,
+            "source": config.source,
+            "team": config.team,
+            "fail_to_pass": list(manifest["fail_to_pass"]),
+            "pass_to_pass": list(manifest["pass_to_pass"]),
+            "anti_cheat": list(manifest["anti_cheat"]),
+        },
+        "agent": {"timeout_sec": config.limits.agent_timeout_sec},
+        "verifier": {"timeout_sec": config.limits.verifier_timeout_sec},
+        "environment": {
+            "allow_internet": False,
+            "build_timeout_sec": config.limits.build_timeout_sec,
+            "cpus": config.limits.cpus,
+            "memory_mb": config.limits.memory_mb,
+            "storage_mb": config.limits.storage_mb,
+        },
     }
     (task_dir / "task.toml").write_text(toml_dumps(doc), encoding="utf-8", newline="\n")
 
@@ -82,16 +85,30 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
 
 
-def write_result(output_dir: Path, *, status: str, error: str | None, limitations: list[str],
-                 attempts: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def write_result(output_dir: Path, *, config: CaseConfig, status: str, error: str | None,
+                 limitations: list[str], attempts: int, snapshot_sha256: str,
+                 extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """PROTOCOL.md section 2. `status` is ready or failed; a run that did not verify the case is
+    failed, with the reason in `limitations`. Extra harness fields (error, attempts, failed_stage,
+    llm) are additive."""
+    if status not in ("ready", "failed"):
+        raise ValueError(f"result status must be ready or failed, got {status!r}")
+    task_ok = (output_dir / "task" / "task.toml").exists()
+    evidence_ok = (output_dir / "evidence").is_dir()
+    lims = list(limitations)
+    if error and error not in lims:
+        lims.append(error)
     result = {
+        "protocol_version": config.protocol_version,
+        "case_id": config.case_id,
         "status": status,
+        "task_path": "task" if task_ok else None,
+        "evidence_path": "evidence" if evidence_ok else None,
+        "limitations": lims,
+        "input_snapshot_sha256": snapshot_sha256 or None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "task_dir": "task",
-        "evidence_dir": "evidence",
         "attempts": attempts,
         "error": error,
-        "limitations": limitations,
         **(extra or {}),
     }
     write_json(output_dir / "result.json", result)

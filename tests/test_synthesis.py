@@ -67,16 +67,27 @@ def test_solve_steps_must_match_the_spec(mock_responses):
     spec = parse_brief_spec(mock_responses["analyze_brief"])      # R1 bug, R2 invariant
     data = copy.deepcopy(mock_responses["synthesize"])
     parse_synthesis(data, spec)
-    data["solve_steps"].append({"requirement_id": "R2", "script": "echo no\n"})
+    data["solve_steps"].append({"requirement_id": "R2", "edits": [{"op": "create", "path": "x.py", "content": "1"}]})
     with pytest.raises(SynthesisError, match="R2 is invariant and must not have a step"):
         parse_synthesis(data, spec)
-    data["solve_steps"] = [{"requirement_id": "R7", "script": "echo\n"}]
+    data["solve_steps"] = [{"requirement_id": "R7", "edits": [{"op": "create", "path": "x.py", "content": "1"}]}]
     with pytest.raises(SynthesisError) as exc:
         parse_synthesis(data, spec)
     assert "R1 (bug) has no step" in str(exc.value) and "unknown requirement R7" in str(exc.value)
     data["solve_steps"] = []
     with pytest.raises(SynthesisError, match="solve_steps is empty"):
         parse_synthesis(data, spec)
+
+
+def test_edits_are_checked_against_the_repository(mock_responses, demo_repo_copy):
+    from harness.localization.code_retriever import read_text
+    read = lambda rel: read_text(demo_repo_copy / rel)  # noqa: E731
+    data = copy.deepcopy(mock_responses["synthesize"])
+    parse_synthesis(data, read_file=read)
+    data["solve_steps"][0]["edits"][0]["old"] = "total += tx.amount  # not what the file says"
+    with pytest.raises(SynthesisError, match="not found in the file as left by the previous steps"):
+        parse_synthesis(data, read_file=read)
+    parse_synthesis(data)                 # without a reader only the structure is validated
 
 
 def test_materialize_writes_step_chain(tmp_path, mock_responses):
@@ -87,7 +98,8 @@ def test_materialize_writes_step_chain(tmp_path, mock_responses):
     solution = task / "solution"
     assert {p.name for p in solution.glob("*.sh")} == {"solve.sh", "solve_R1.sh"}
     assert b"\r\n" not in (solution / "solve.sh").read_bytes()
-    assert "solve_R1.sh" in (solution / "solve.sh").read_text()
+    solve = (solution / "solve.sh").read_text(encoding="utf-8")
+    assert "[solve] step R1" in solve and "solve_R1.sh" not in solve      # self-contained orchestrator
     manifest = json.loads((task / "tests" / "manifest.json").read_text())
     assert set(manifest) == {"fail_to_pass", "pass_to_pass", "anti_cheat"}
     assert (task / "instruction.md").read_text(encoding="utf-8").startswith("# ")
@@ -95,7 +107,7 @@ def test_materialize_writes_step_chain(tmp_path, mock_responses):
 
 def test_prune_requirement_removes_step_tests_and_orphan_files(mock_responses):
     data = copy.deepcopy(mock_responses["synthesize"])
-    data["solve_steps"].append({"requirement_id": "R3", "script": "echo r3\n"})
+    data["solve_steps"].append({"requirement_id": "R3", "edits": [{"op": "create", "path": "ledger/r3.py", "content": "X = 1\n"}]})
     data["test_files"].append({"path": "tests/test_r3.py", "content": "def test_r3():\n    assert 1\n"})
     data["fail_to_pass"].append("tests/test_r3.py::test_r3")
     data["coverage"].append({"requirement_id": "R3", "tests": ["tests/test_r3.py::test_r3",

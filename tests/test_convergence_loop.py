@@ -10,7 +10,7 @@ from harness.core.config import CaseConfig
 from harness.core.llm.mock_client import MockLLMClient
 from harness.core.pipeline import Pipeline, prune_candidates
 from harness.core.synthesis import SynthesisEngine, materialize, parse_synthesis
-from harness.localization.code_retriever import build_project_tree, localize
+from harness.localization.code_retriever import build_project_tree, localize, read_text
 from harness.providers.python.detector import PythonStackDetector
 from harness.providers.python.test_runner import CheckReport
 from harness.validation.convergence import VerificationReport, attribute_problems
@@ -26,7 +26,7 @@ def _with_r3(mock_responses: dict) -> dict:
         "id": "R3", "title": "Rounding to cents", "statement": "net_balance rounds to 2 decimals",
         "acceptance_criteria": ["1.005 -> 1.01"], "kind": "bug", "testable": True})
     s = m["synthesize"]
-    s["solve_steps"].append({"requirement_id": "R3", "script": "echo r3\n"})
+    s["solve_steps"].append({"requirement_id": "R3", "edits": [{"op": "create", "path": "ledger/r3.py", "content": "X = 1\n"}]})
     s["test_files"].append({"path": "tests/test_r3.py", "content": "def test_r3():\n    assert 3 == 4\n"})
     s["fail_to_pass"].append(R3_TEST)
     s["coverage"].append({"requirement_id": "R3", "tests": [R3_TEST]})
@@ -70,8 +70,9 @@ def loop(demo_input, mock_responses, tmp_path):
         profile = PythonStackDetector().detect(cfg.repository, tree)
         spec = parse_brief_spec(responses["analyze_brief"])
         ctx = localize(tree, cfg.brief, spec=spec, index_dir=tmp_path / "idx", embedder=None, backend="keyword")
-        engine = SynthesisEngine(llm, brief=cfg.brief, profile=profile, spec=spec)
-        syn = parse_synthesis(responses["synthesize"], spec)
+        read = lambda rel: read_text(cfg.repository / rel)  # noqa: E731
+        engine = SynthesisEngine(llm, brief=cfg.brief, profile=profile, spec=spec, read_file=read)
+        syn = parse_synthesis(responses["synthesize"], spec, read)
         pipeline = Pipeline(cfg, llm, search_backend="keyword", skip_docker=True)
         pipeline.output_dir.mkdir(parents=True)
         pipeline.task_dir.mkdir()
@@ -97,6 +98,7 @@ def test_unconverged_requirement_is_pruned_and_instruction_rewritten(loop, mock_
     assert [p["purpose"] for p in llm.prompts] == ["heal", "rewrite_instruction"]
     heal_prompt = llm.prompts[0]["user"]
     assert "<frozen>\n- R1\n- R2\n</frozen>" in heal_prompt and "<focus>\n- R3:" in heal_prompt
+    assert '<repository_state after="R1">' in heal_prompt and "total -= tx.amount" in heal_prompt
     assert any("R3" in lim and "pruned" in lim for lim in pipeline.limitations)
     solution_dir = pipeline.task_dir / "solution"
     assert {p.name for p in solution_dir.glob("*.sh")} == {"solve.sh", "solve_R1.sh"}
@@ -108,7 +110,7 @@ def test_unconverged_requirement_is_pruned_and_instruction_rewritten(loop, mock_
 def test_healed_bundle_touching_a_frozen_step_is_rejected(loop, mock_responses):
     responses = _with_r3(mock_responses)
     bad = copy.deepcopy(responses["synthesize"])
-    bad["solve_steps"][0]["script"] = "echo tampered with R1\n"          # R1 converged -> frozen
+    bad["solve_steps"][0]["edits"][0]["new"] += "            pass\n"       # R1 converged -> frozen
     responses["heal"] = [bad, responses["synthesize"]]
     pipeline, engine, ctx, spec, syn, llm, tree, profile = loop(responses, max_retries=2)
     verifier = FakeVerifier([_report(R3_PROBLEMS), _report([])])
@@ -125,7 +127,7 @@ def test_healed_bundle_touching_a_frozen_step_is_rejected(loop, mock_responses):
 def test_unjustified_solution_change_is_rejected(loop, mock_responses):
     responses = _with_r3(mock_responses)
     bad = copy.deepcopy(responses["synthesize"])
-    bad["solve_steps"][1]["script"] = "echo bent R3 to satisfy a wrong test\n"
+    bad["solve_steps"][1]["edits"][0]["content"] = "X = 2  # bent R3 to satisfy a wrong test\n"
     responses["heal"] = [bad, responses["synthesize"]]
     pipeline, engine, ctx, spec, syn, llm, tree, profile = loop(responses, max_retries=2)
     base_side = ["base: reward=1, expected 0", f"base: fail_to_pass test passed on original code: {R3_TEST}"]

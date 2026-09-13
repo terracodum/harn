@@ -27,7 +27,10 @@ def generated(demo_input, mock_responses, tmp_path):
 
 def test_pipeline_packages_task(generated):
     cfg, result = generated
-    assert result["status"] == "unverified", result
+    assert result["status"] == "failed" and result["error"] is None, result       # packaged but not verified
+    assert result["task_path"] == "task" and result["evidence_path"] == "evidence"
+    assert result["protocol_version"] == "1.0" and result["case_id"] == cfg.case_id
+    assert any("NOT verified" in lim for lim in result["limitations"])
     out = cfg.output_dir
     task = out / "task"
     for rel in ("task.toml", "instruction.md", "solution/solve.sh", "tests/test.sh", "tests/verify.py",
@@ -38,9 +41,13 @@ def test_pipeline_packages_task(generated):
     assert not (out / ".work").exists()
     toml = tomllib.loads((task / "task.toml").read_text(encoding="utf-8"))
     assert toml["schema_version"] == "1.1"
-    assert toml["input_snapshot_sha256"] == snapshot_sha256(cfg.repository)
-    assert len(toml["fail_to_pass"]) == 3 and len(toml["anti_cheat"]) == 2
-    assert set(toml["fail_to_pass"]).isdisjoint(toml["pass_to_pass"])
+    assert result["input_snapshot_sha256"] == snapshot_sha256(cfg.repository)
+    assert toml["task"]["name"] == cfg.case_id and toml["task"]["authors"][0]["email"] == cfg.author.email
+    md = toml["metadata"]
+    assert md["task_type"] == "agentic" and md["bank_domain"] and md["language"] == "ru"
+    assert len(md["fail_to_pass"]) == 3 and len(md["anti_cheat"]) == 2
+    assert set(md["fail_to_pass"]).isdisjoint(md["pass_to_pass"])
+    assert toml["environment"]["allow_internet"] is False
     usage = json.loads((out / "evidence/llm_usage.json").read_text())
     assert usage["total_calls"] == 2
     assert {c["purpose"] for c in usage["calls"]} == {"analyze_brief", "synthesize"}

@@ -26,6 +26,12 @@ _UNSUPPORTED_FORMAT = re.compile(r"response_format|json_schema|json_object|struc
 log = logging.getLogger(__name__)
 
 
+def _tokens(usage: Any, field: str) -> int | None:
+    """Token count as reported by the server, None when it is not reported (never a made-up 0)."""
+    value = getattr(usage, field, None) if usage is not None else None
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 class OpenAICompatClient(BaseLLMClient):
     def __init__(self, settings: LLMSettings, tracker: TokenTracker | None = None) -> None:
         super().__init__(tracker)
@@ -87,7 +93,7 @@ class OpenAICompatClient(BaseLLMClient):
                     text, resp = self._call(messages, mode, purpose, schema, max_tokens)
                 except self._openai.BadRequestError as exc:
                     self.tracker.record(LLMCall(purpose, self.settings.model, time.monotonic() - started,
-                                                0, 0, ok=False, error=f"{type(exc).__name__}: {exc}", mode=mode))
+                                                None, None, ok=False, error=f"{type(exc).__name__}: {exc}", mode=mode))
                     if mode == "text" or not _UNSUPPORTED_FORMAT.search(str(exc)):
                         # an unrelated 400 (context too long, bad model id, ...): never mask it by
                         # re-sending the same request under a weaker response_format
@@ -99,7 +105,7 @@ class OpenAICompatClient(BaseLLMClient):
                     break
                 except self._openai.APIError as exc:
                     self.tracker.record(LLMCall(purpose, self.settings.model, time.monotonic() - started,
-                                                0, 0, ok=False, error=f"{type(exc).__name__}: {exc}"))
+                                                None, None, ok=False, error=f"{type(exc).__name__}: {exc}"))
                     raise LLMError(f"LLM call '{purpose}' failed: {exc}") from exc
 
                 usage = getattr(resp, "usage", None)
@@ -107,8 +113,8 @@ class OpenAICompatClient(BaseLLMClient):
                     purpose=purpose,
                     model=getattr(resp, "model", None) or self.settings.model,
                     duration_sec=round(time.monotonic() - started, 3),
-                    input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                    output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                    input_tokens=_tokens(usage, "prompt_tokens"),
+                    output_tokens=_tokens(usage, "completion_tokens"),
                     finish_reason=resp.choices[0].finish_reason,
                     mode=mode,
                 )

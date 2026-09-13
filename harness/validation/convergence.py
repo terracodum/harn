@@ -121,7 +121,7 @@ class VerificationReport:
 
 class ConvergenceVerifier:
     def __init__(self, docker: DockerRunner, runner: ITestRunner, *, task_dir: Path, evidence_dir: Path,
-                 limits: Limits, image_tag: str, isolated_runs: bool = True) -> None:
+                 limits: Limits, image_tag: str, isolated_runs: bool = True, docker_version: str = "") -> None:
         self.docker = docker
         self.runner = runner
         self.task_dir = task_dir
@@ -129,6 +129,20 @@ class ConvergenceVerifier:
         self.limits = limits
         self.image_tag = image_tag
         self.isolated_runs = isolated_runs
+        self.docker_version = docker_version
+
+    def _run_entry(self, name: str, proc: ProcResult, *, logs_dir: Path | None = None, **extra) -> dict:
+        """One element of evidence/summary.json `runs` (PROTOCOL.md section 2): command,
+        environment version, duration, exit code, reward, path of the per-test report."""
+        base = self.evidence_dir.parent
+        entry = {"name": name, **proc.to_dict(),
+                 "environment": {"image": self.image_tag, "docker_server": self.docker_version}}
+        if logs_dir is not None:
+            report = logs_dir / "verifier" / "results.json"
+            entry["report"] = report.relative_to(base).as_posix() if report.exists() else None
+            entry["log"] = (logs_dir / "container.log").relative_to(base).as_posix()
+        entry.update(extra)
+        return entry
 
     # ----------------------------------------------------------------- pieces
     def build_image(self) -> ProcResult:
@@ -165,7 +179,8 @@ class ConvergenceVerifier:
 
         if need_build:
             build = self.build_image()
-            report.runs.append({"name": "build", **build.to_dict(), "status": "ok" if build.exit_code == 0 else "failed"})
+            report.runs.append(self._run_entry("build", build, status="ok" if build.exit_code == 0 else "failed",
+                                               log=(self.evidence_dir / "build.log").relative_to(self.evidence_dir.parent).as_posix()))
             if build.exit_code != 0:
                 report.problems.append("docker build failed" + (" (timeout)" if build.timed_out else ""))
                 report.logs["build.log"] = _tail(self.evidence_dir / "build.log")
@@ -181,8 +196,8 @@ class ConvergenceVerifier:
                 check.problems.append(f"{kind}: {note}")
                 check.ok = False
             setattr(report, kind, check)
-            report.runs.append({"name": kind, **proc.to_dict(), "reward": result.reward,
-                                "status": "ok" if check.ok else "failed"})
+            report.runs.append(self._run_entry(kind, proc, logs_dir=logs_dir, reward=result.reward,
+                                               status="ok" if check.ok else "failed"))
             pg_log = logs_dir / "verifier" / "postgres.log"
             if pg_log.exists():
                 pg_text = pg_log.read_text(encoding="utf-8", errors="replace")
@@ -215,8 +230,8 @@ class ConvergenceVerifier:
                     ok = result.reward == expected and not result.timed_out
                     report.isolated[kind][cat] = {"reward": result.reward, "expected": expected, "ok": ok,
                                                   "duration_sec": proc.duration_sec}
-                    report.runs.append({"name": f"isolated/{kind}/{cat}", **proc.to_dict(),
-                                        "reward": result.reward, "status": "ok" if ok else "failed"})
+                    report.runs.append(self._run_entry(f"isolated/{kind}/{cat}", proc, logs_dir=logs_dir,
+                                                       reward=result.reward, status="ok" if ok else "failed"))
                     if not ok:
                         report.problems.append(f"isolated {kind}/{cat}: reward={result.reward}, expected {expected}")
         report.ok = not report.problems
@@ -256,8 +271,8 @@ class ConvergenceVerifier:
                 check.ok = False
             report.staged.append({"prefix": order[:k], "ok": check.ok, "problems": check.problems,
                                   "reward": result.reward, "duration_sec": proc.duration_sec})
-            report.runs.append({"name": f"staged/{upto}", **proc.to_dict(), "reward": result.reward,
-                                "status": "ok" if check.ok else "failed"})
+            report.runs.append(self._run_entry(f"staged/{upto}", proc, logs_dir=staged_dir / "oracle",
+                                               reward=result.reward, status="ok" if check.ok else "failed"))
             if not check.ok:
                 notes.append(f"staged: applying only steps {', '.join(order[:k])} the oracle run already fails: "
                              + " | ".join(p[:300] for p in check.problems[:6]))

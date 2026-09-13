@@ -38,7 +38,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                         skip_docker=args.skip_docker, isolated_runs=not args.no_isolated, keep_image=args.keep_image)
     result = pipeline.run()
     print(json.dumps({k: result[k] for k in ("status", "attempts", "error", "limitations")}, indent=2, ensure_ascii=False))
-    return 0 if result["status"] in ("ready", "unverified") else 1
+    if result["status"] == "ready":
+        return 0
+    return 0 if args.skip_docker and result["error"] is None else 1
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
@@ -96,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="generate and verify a benchmark case")
     p_run.add_argument("input", help="input JSON")
     p_run.add_argument("--output-dir")
-    p_run.add_argument("--skip-docker", action="store_true", help="stop after packaging (no verification)")
+    p_run.add_argument("--skip-docker", action="store_true",
+                       help="stop after packaging: the case is written but result.json says failed (not verified)")
     p_run.add_argument("--no-isolated", action="store_true", help="skip per-category isolated runs")
     p_run.add_argument("--keep-image", action="store_true")
     _add_llm_args(p_run)

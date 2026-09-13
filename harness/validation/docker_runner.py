@@ -22,6 +22,7 @@ class ProcResult:
     duration_sec: float
     timed_out: bool
     log_path: str
+    command: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -71,7 +72,8 @@ class DockerRunner:
                 proc.kill()
                 proc.wait()
                 fh.write(f"\n[harness] timed out after {timeout}s\n")
-        return ProcResult(proc.returncode, round(time.monotonic() - started, 3), timed_out, str(log_path))
+        return ProcResult(proc.returncode, round(time.monotonic() - started, 3), timed_out, str(log_path),
+                          command=" ".join(cmd))
 
     def build(self, context_dir: Path, tag: str, *, log_path: Path, timeout: int) -> ProcResult:
         cmd = [self.docker, "build", "--progress=plain", "-t", tag, str(context_dir.resolve())]

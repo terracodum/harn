@@ -20,7 +20,7 @@ from harness.core.errors import PipelineError
 from harness.core.llm.base_client import BaseLLMClient, LLMError
 from harness.core.snapshot import snapshot_sha256
 from harness.core.synthesis import Synthesis, SynthesisEngine, SynthesisError, materialize
-from harness.localization.code_retriever import ContextPackage, build_project_tree, localize
+from harness.localization.code_retriever import ContextPackage, build_project_tree, localize, read_text
 from harness.providers.python.detector import PythonStackDetector
 from harness.providers.python.env_builder import PythonEnvironmentBuilder
 from harness.providers.python.test_runner import PytestJUnitRunner
@@ -33,17 +33,26 @@ log = logging.getLogger("harness")
 __all__ = ["Pipeline", "PipelineError", "prune_candidates"]
 
 
-def prune_candidates(attribution: Attribution, spec: BriefSpec, syn: Synthesis) -> tuple[list[str], str | None]:
+def prune_candidates(attribution: Attribution, spec: BriefSpec, syn: Synthesis,
+                     read_file: Any | None = None) -> tuple[list[str], str | None]:
     """Which requirements may be dropped so that the rest of the case survives.
 
     Returns (ids, reason_if_impossible). Pruning is refused when a problem cannot be pinned to a
     requirement (it could concern any of them) or when dropping the failing requirements would
-    leave no fail_to_pass test / no bug-like requirement - such a case has no value."""
+    leave no fail_to_pass test / no bug-like requirement - such a case has no value. Later steps
+    whose edits stop applying without a pruned step are pruned with it (closure)."""
     if attribution.unattributed:
         return [], "problems not attributable to a requirement: " + " | ".join(p[:200] for p in attribution.unattributed[:5])
     failing = [r.id for r in spec.requirements if attribution.by_requirement.get(r.id)]
     if not failing:
         return [], "no requirement-bound problems"
+    if read_file is not None:
+        closure = list(failing)
+        for rid in list(closure):
+            for dep in syn.solution.dependents(rid, read_file):
+                if dep not in closure:
+                    closure.append(dep)
+        failing = [r.id for r in spec.requirements if r.id in closure]
     remaining = [r for r in spec.requirements if r.id not in failing]
     if not any(r.kind in NEEDS_FAIL_TO_PASS and r.testable for r in remaining):
         return [], "pruning would leave no bug/feature/change requirement"
@@ -134,8 +143,10 @@ class Pipeline:
                     "profile": profile.to_dict()})
                 log.info("stack: %s", profile.to_dict())
 
+            read_file = lambda rel: read_text(cfg.repository / rel)  # noqa: E731
             with self._stage("2a-brief-analysis"):
-                spec = analyze_brief(self.llm, cfg.brief, [f.rel_path for f in tree.trusted_files])
+                spec = analyze_brief(self.llm, cfg.brief, [f.rel_path for f in tree.trusted_files],
+                                     language_name=cfg.language_name)
                 write_json(self.evidence_dir / "brief_spec.json", spec.to_dict())
                 log.info("requirements: %s", [f"{r.id}:{r.title[:60]}" for r in spec.requirements])
                 for a in spec.assumptions:
@@ -152,7 +163,8 @@ class Pipeline:
                 log.info("context files: %s", [f.path for f in ctx.files])
 
             engine = SynthesisEngine(self.llm, brief=cfg.brief, profile=profile, spec=spec,
-                                     instruction_language=cfg.language_name, difficulty=cfg.difficulty)
+                                     instruction_language=cfg.language_name, difficulty=cfg.difficulty,
+                                     read_file=read_file)
             env_builder = PythonEnvironmentBuilder()
             with self._stage("3-synthesis"):
                 syn: Synthesis = engine.synthesize(ctx, max_chars=cfg.limits.max_context_chars)
@@ -166,8 +178,9 @@ class Pipeline:
                                   extra_packages=syn.extra_pip_packages)
 
             if self.skip_docker:
-                status = "unverified"
-                self.limitations.append("verification skipped (--skip-docker): Base/Oracle runs not executed")
+                # PROTOCOL.md knows only ready | failed: an unverified case is not ready
+                self.limitations.append("verification skipped (--skip-docker): Base/Oracle runs not executed, "
+                                        "the case is packaged but NOT verified")
             else:
                 ok, info = self.docker.available()
                 if not ok:
@@ -175,7 +188,8 @@ class Pipeline:
                 image_tag = cfg.image_tag
                 verifier = ConvergenceVerifier(self.docker, PytestJUnitRunner(), task_dir=self.task_dir,
                                                evidence_dir=self.evidence_dir, limits=cfg.limits,
-                                               image_tag=image_tag, isolated_runs=self.isolated_runs)
+                                               image_tag=image_tag, isolated_runs=self.isolated_runs,
+                                               docker_version=info)
                 with self._stage("5-convergence"):
                     report, attempts, syn = self._converge(verifier, env_builder, engine, ctx, spec, syn,
                                                            tree=tree, profile=profile)
@@ -191,7 +205,8 @@ class Pipeline:
                 snapshot_after = snapshot_sha256(cfg.repository)
                 if snapshot_after != snapshot_before:
                     status, error = "failed", "source repository changed during generation"
-                write_task_toml(self.task_dir, cfg, profile, manifest, snapshot_before)
+                write_task_toml(self.task_dir, cfg, manifest, description=spec.summary or cfg.brief[:200],
+                                bank_domain=spec.bank_domain)
                 for note in profile.notes:
                     self.limitations.append(f"stack: {note}")
                 if profile.uses_postgres:
@@ -220,12 +235,11 @@ class Pipeline:
                 "problems": report.problems if report else ([error] if error else []),
             })
             shutil.rmtree(self.work_dir, ignore_errors=True)
-            result = write_result(self.output_dir, status=status, error=error, limitations=self.limitations,
-                                  attempts=attempts, extra={"case_id": cfg.case_id,
-                                                            "failed_stage": None if status != "failed" else self.current_stage,
-                                                            "input_snapshot_sha256": snapshot_before,
-                                                            "llm": {k: v for k, v in self.llm.tracker.summary().items()
-                                                                    if k != "calls"} | {"details": "evidence/llm_usage.json"}})
+            result = write_result(self.output_dir, config=cfg, status=status, error=error, limitations=self.limitations,
+                                  attempts=attempts, snapshot_sha256=snapshot_before,
+                                  extra={"failed_stage": None if status != "failed" else self.current_stage,
+                                         "llm": {k: v for k, v in self.llm.tracker.summary().items()
+                                                 if k != "calls"} | {"details": "evidence/llm_usage.json"}})
         return result
 
     # ------------------------------------------------------------ convergence
@@ -343,14 +357,16 @@ class Pipeline:
         """Drop the requirements that never converged. The instruction is rewritten by the model (a
         failed rewrite fails the case; nothing is patched by hand)."""
         attribution = attribute_problems(report.problems, syn.manifest, syn.coverage)
-        ids, why_not = prune_candidates(attribution, spec, syn)
+        ids, why_not = prune_candidates(attribution, spec, syn, engine.read_file)
         if not ids:
             log.warning("pruning not possible: %s", why_not)
             self.limitations.append(f"pruning not possible: {why_not}")
             return []
         pruned: dict[str, str] = {}
         for rid in ids:
-            reason = ("did not converge after healing: " + " | ".join(p[:200] for p in attribution.by_requirement[rid][:3]))
+            own = attribution.by_requirement.get(rid)
+            reason = ("did not converge after healing: " + " | ".join(p[:200] for p in own[:3])) if own else \
+                "its edits depend on a pruned step"
             req = spec.prune(rid, reason)
             removed = syn.prune_requirement(rid, reason)
             pruned[rid] = reason

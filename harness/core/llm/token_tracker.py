@@ -11,8 +11,8 @@ class LLMCall:
     purpose: str
     model: str
     duration_sec: float
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int | None        # None when the provider does not report usage (PROTOCOL.md)
+    output_tokens: int | None
     ok: bool = True
     error: str | None = None
     finish_reason: str | None = None
@@ -30,8 +30,9 @@ class TokenTracker:
         return {
             "total_calls": len(self.calls),
             "failed_calls": sum(1 for c in self.calls if not c.ok),
-            "total_input_tokens": sum(c.input_tokens for c in self.calls),
-            "total_output_tokens": sum(c.output_tokens for c in self.calls),
+            "total_input_tokens": sum(c.input_tokens or 0 for c in self.calls),
+            "total_output_tokens": sum(c.output_tokens or 0 for c in self.calls),
+            "tokens_unknown_calls": sum(1 for c in self.calls if c.input_tokens is None or c.output_tokens is None),
             "total_duration_sec": round(sum(c.duration_sec for c in self.calls), 3),
             "models": sorted({c.model for c in self.calls}),
             "calls": [asdict(c) for c in self.calls],

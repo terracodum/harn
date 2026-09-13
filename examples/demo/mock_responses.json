@@ -1,6 +1,7 @@
 {
   "analyze_brief": {
     "summary": "Settled refunds must decrease the net balance at daily close instead of increasing it.",
+    "bank_domain": "Расчёты и суточное закрытие",
     "brief_language": "ru",
     "requirements": [
       {
@@ -75,7 +76,14 @@
     "solve_steps": [
       {
         "requirement_id": "R1",
-        "script": "#!/bin/sh\nset -eu\npython - <<'PY'\nfrom pathlib import Path\np = Path(\"ledger/netting.py\")\ns = p.read_text(encoding=\"utf-8\")\nold = \"        if tx.kind == \\\"refund\\\":\\n            total += tx.amount\\n\"\nnew = \"        if tx.kind == \\\"refund\\\":\\n            total -= tx.amount\\n\"\nassert old in s, \"expected snippet not found\"\np.write_text(s.replace(old, new, 1), encoding=\"utf-8\")\nPY\n"
+        "edits": [
+          {
+            "op": "replace",
+            "path": "ledger/netting.py",
+            "old": "        if tx.kind == \"refund\":\n            total += tx.amount\n",
+            "new": "        if tx.kind == \"refund\":\n            total -= tx.amount\n"
+          }
+        ]
       }
     ],
     "instruction_md": "# Корректный учёт возвратов при суточном закрытии\n\n## Контекст\nМодуль `ledger` считает нетто-баланс на момент суточного закрытия. Операция `Transaction` имеет вид `payment` или `refund`, сумму `amount` (Decimal) и момент расчёта `settled_at`.\n\n## Проблема\nПри закрытии дня возвраты со статусом settled увеличивают нетто-баланс, хотя должны его уменьшать. Платежи учитываются верно.\n\n## Требуемое поведение\n- `net_balance(transactions, now)` возвращает сумму settled-платежей минус сумму settled-возвратов.\n- Операция считается settled, если `settled_at` задан и не позже `now` (включительно).\n- Операции без `settled_at` или с `settled_at` позже `now` в расчёт не входят.\n- Результат — `Decimal`; при отсутствии операций возвращается `Decimal(\"0\")`.\n\n## Ограничения\n- Публичные сигнатуры `net_balance` и `is_settled` не менять.\n- Модель `Transaction` (имена и порядок полей) не менять.\n- Не добавлять внешние зависимости.\n\n## Проверка\nСуществующие тесты запускаются командой `pytest` из корня репозитория и должны проходить.\n",
