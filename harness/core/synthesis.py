@@ -110,8 +110,10 @@ Rules:
    ids "tests/test_file.py::test_name" (or "tests/test_file.py::TestClass::test_name").
    - fail_to_pass: assert the corrected behaviour of the TARGET requirement; MUST fail on the original
      code by a wrong result (AssertionError / wrong value), never by SyntaxError; MUST pass after the
-     edits. Cover edge cases: interval boundaries, signs, empty inputs, rounding. They must not depend
-     on the behaviour of the other cases' requirements (still unfixed in this case).
+     edits. Cover edge cases: interval boundaries, signs, empty inputs, rounding. If the target requirement
+     specifies temporal intervals or boundary cutoffs (e.g. [00:00, 00:00) / half-open interval), fail_to_pass
+     MUST include boundary timestamp events (e.g., at exactly 00:00 of the next date) to exercise the boundary logic.
+     They must not depend on the behaviour of the other cases' requirements (still unfixed in this case).
    - pass_to_pass: regression tests of the invariant requirements and adjacent behaviour that pass
      before AND after the fix.
    - anti_cheat: constraints that pass before AND after: public function signatures, dataclass/DTO

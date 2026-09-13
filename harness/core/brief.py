@@ -110,9 +110,8 @@ BRIEF_SCHEMA: dict[str, Any] = {
             "type": "array",
             "description": (
                 "Atomic requirements to solve. "
-                "Do NOT split every sentence into a separate requirement. "
-                "Subordinate status filters belong to the calculation requirement. "
-                "Background properties (isolation, idempotency) belong to constraints or kind='invariant'."
+                "Decompose EVERY distinct behavioral rule, formula, or boundary cutoff stated in the brief into its own separate R_i. "
+                "Never merge orthogonal rules (e.g., calculation formulas vs temporal boundaries) into a single generic requirement."
             ),
             "items": {
                 "type": "object",
@@ -125,9 +124,9 @@ BRIEF_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": list(REQUIREMENT_KINDS),
                         "description": (
-                            "Requirement kind. MUST be 'bug' ONLY for actual defects/flaws in existing code to be fixed. "
-                            "MUST be 'invariant' for properties that already work (isolation, idempotency, safety). "
-                            "NEVER label an invariant or a status filter as 'bug'."
+                            "Requirement kind. Use 'bug' for defects/discrepancies that may require code fixes. "
+                            "Use 'invariant' for established invariants that already work. "
+                            "When in doubt whether a rule is already satisfied, label it as 'bug' so the harness verifies it."
                         ),
                     },
                     "testable": {"type": "boolean"},
@@ -177,25 +176,23 @@ Rules:
    - If the brief describes a bug as a discrepancy between actual and expected behavior, the REQUIREMENT
      is the correct application behavior, NOT the act of comparing them in a test!
 
-   CRITICAL PRINCIPLE 2: Decomposition into Genuine Orthogonal Requirements (Do NOT Over-Split!).
-   - Do NOT turn every sentence of prose into a separate requirement!
-   - Decompose ONLY along genuinely distinct functional dimensions that represent independent business rules:
-       * Dimension A: Arithmetic / calculation / aggregation formula (e.g., sign of debits/credits, netting formulas, calculating totals).
-       * Dimension B: Temporal / calendar / boundary cutoff (e.g., date intervals, timezone conversions, time boundaries).
-       * Dimension C: State machine / lifecycle transitions (e.g., status updates, event handling).
-   - Each distinct defect or required behavioral change must have its own requirement R1, R2, ...
+   CRITICAL PRINCIPLE 2: Full and Granular Decomposition of All Rules Stated in the Brief.
+   - EVERY independent behavioral rule, formula, or boundary condition stated in the brief MUST be its OWN separate requirement R1, R2, ...
+   - NEVER create a single generic umbrella requirement (such as "Reconcile preview with SQL" or "Align system X with Y") that combines multiple orthogonal rules!
+     Instead, decompose each distinct rule into its own requirement:
+       * Calculation / arithmetic rules (e.g., sign of purchases vs refunds, calculation of net totals) -> MUST be its own R_i.
+       * Temporal / calendar / boundary rules (e.g., half-open interval [00:00, 00:00), timezone conversions, excluding next-day midnight) -> MUST be its own R_j.
+       * Event filtering / eligibility rules (e.g., settled events only, status filters) -> MUST be its own R_k.
+       * Idempotency / state update rules (e.g., repeat close replacing only that date) -> MUST be its own R_m.
+   - Why granular decomposition is critical:
+     * The harness independently investigates and tests each requirement against the repository.
+     * True defects become dedicated, focused benchmark cases.
+     * Requirements that turn out to already work correctly in the baseline codebase (invariants) are automatically verified and pruned by the harness.
+     * Decomposing each rule guarantees that NO defect or rule from the brief is accidentally skipped, concealed, or left unresolved!
 
-   CRITICAL PRINCIPLE 3: Strict Demarcation of Bugs vs. Filters vs. Invariants / Constraints.
-   - Subordinate filters are criteria of the calculation, NOT separate bugs:
-       * Clauses specifying which items or records participate in a calculation (e.g., active flags, specific statuses, valid records)
-         are the filtering criteria of that calculation requirement. Include them in the statement and
-         acceptance criteria of that calculation requirement. DO NOT create a standalone requirement for them!
-   - Background guarantees belong to constraints or kind='invariant', NEVER kind='bug':
-       * Properties asserting data isolation, security boundaries, idempotency, or preserving untouched modules
-         ALREADY WORK in the codebase. If included as requirements, their kind MUST be 'invariant' (NEVER 'bug')!
-       * Marking an already-working property as 'bug' is a critical error: it creates fake benchmark cases for which
-         no failing test (fail_to_pass) can be written.
-   - Requirements with kind='bug' MUST strictly describe actual defects, discrepancies, or missing logic that require code changes.
+   CRITICAL PRINCIPLE 3: Acceptance Criteria Completeness.
+   - Every requirement R_i must have explicit, concrete acceptance criteria (inputs -> expected outputs).
+   - If a requirement involves boundary conditions (e.g., [00:00, 00:00) interval), acceptance_criteria MUST include an explicit check for the exact boundary edge case (e.g., "Events at exactly 00:00 of the next date are excluded").
 
    - statement = the behavior that must hold in the application AFTER the change.
    - acceptance_criteria = concrete domain checks (inputs -> expected outputs).
